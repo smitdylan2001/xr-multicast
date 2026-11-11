@@ -4562,6 +4562,7 @@ dependencies = [
  "clap",
  "eframe",
  "png",
+ "pollster",
  "serde",
  "serde_json",
  "tokio",

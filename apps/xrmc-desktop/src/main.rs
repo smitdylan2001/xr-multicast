@@ -1,4 +1,8 @@
-//! XR MultiCast native desktop app (work in progress).
+//! XR MultiCast native desktop app (`xr-multicast`).
+
 fn main() {
-    println!("XR MultiCast desktop: in progress");
+    if let Err(e) = xrmc_desktop::cli::run() {
+        eprintln!("xr-multicast: {e}");
+        std::process::exit(1);
+    }
 }

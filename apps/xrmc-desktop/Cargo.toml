@@ -7,14 +7,28 @@ repository.workspace = true
 authors.workspace = true
 description = "XR MultiCast native desktop app (Windows, macOS, Linux incl. single-board computers with touchscreens)."
 
+[lib]
+name = "xrmc_desktop"
+path = "src/lib.rs"
+
 [[bin]]
 name = "xr-multicast"
 path = "src/main.rs"
 
 [dependencies]
+xrmc-adb.workspace = true
 xrmc-core.workspace = true
 xrmc-hub.workspace = true
+xrmc-scrcpy.workspace = true
 xrmc-decode.workspace = true
 xrmc-render.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "tracing-log", "ansi", "std"] }
+clap = { version = "4", features = ["derive"] }
+png = "0.18"
+pollster = "1"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
