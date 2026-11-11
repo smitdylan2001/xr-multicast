@@ -123,6 +123,22 @@ pub struct Capabilities {
     pub av1_10: DecodeCaps,
     /// Human-readable backend description, e.g. `FFmpeg 8.0 (libavcodec 62.28) + OpenH264`.
     pub backend: String,
+    /// Per codec profile: which decoder would be used and how (for the UI).
+    pub details: Vec<CodecDetail>,
+}
+
+/// How one codec profile is decoded on this machine.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodecDetail {
+    /// Decoder-support key: `h264`, `h265`, `av1`, `h265_10`, `av1_10`.
+    pub key: String,
+    pub caps: DecodeCaps,
+    /// Decoder that would be used, e.g. `hevc`, `libdav1d`, `OpenH264`,
+    /// `c2.qti.hevc.decoder`; empty if unsupported.
+    pub decoder: String,
+    /// Hardware API when `caps.hw`, e.g. `VA-API (AMD Radeon 780M)`, `V4L2`,
+    /// `VideoToolbox`, `D3D11VA`, `MediaCodec`.
+    pub hw_api: Option<String>,
 }
 
 /// Decoder settings.
@@ -190,6 +206,8 @@ pub enum Backend {
     Ffmpeg,
     /// OpenH264 only (H.264).
     OpenH264,
+    /// Android NDK `AMediaCodec` (Android only; hardware where the device has it).
+    MediaCodec,
 }
 
 /// Description of the FFmpeg found at runtime (e.g.
@@ -224,6 +242,13 @@ fn probe_capabilities() -> Capabilities {
     if let Some(v) = oh {
         parts.push(format!("OpenH264 {v}"));
     }
+    let detail = |key: &str, name: Option<&str>| CodecDetail {
+        key: key.into(),
+        caps: any(name.is_some()),
+        decoder: name.unwrap_or_default().into(),
+        hw_api: None,
+    };
+    let h264_name = h264.or(oh.map(|_| "OpenH264"));
     Capabilities {
         h264: any(h264.is_some() || oh.is_some()),
         h265: any(hevc.is_some()),
@@ -236,6 +261,13 @@ fn probe_capabilities() -> Capabilities {
         } else {
             parts.join(" + ")
         },
+        details: vec![
+            detail("h264", h264_name),
+            detail("h265", hevc),
+            detail("av1", av1),
+            detail("h265_10", hevc),
+            detail("av1_10", av1),
+        ],
     }
 }
 
