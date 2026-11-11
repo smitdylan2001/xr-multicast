@@ -1,0 +1,29 @@
+# XR MultiCast native core (shared by the desktop apps on Windows/macOS/Linux, Android, and headless hubs).
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/smitdylan2001/xr-multicast"
+authors = ["Dylan Smit (Dunk XR / Dunk Technologies)"]
+
+[workspace.dependencies]
+xrmc-adb = { path = "crates/xrmc-adb" }
+xrmc-scrcpy = { path = "crates/xrmc-scrcpy" }
+xrmc-media = { path = "crates/xrmc-media" }
+xrmc-core = { path = "crates/xrmc-core" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

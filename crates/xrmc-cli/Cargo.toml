@@ -1,0 +1,18 @@
+[package]
+name = "xrmc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "xrmc"
+path = "src/main.rs"
+
+[dependencies]
+xrmc-adb.workspace = true
+xrmc-scrcpy.workspace = true
+xrmc-media.workspace = true
+xrmc-core.workspace = true
+tokio.workspace = true
