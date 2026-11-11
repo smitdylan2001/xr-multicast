@@ -78,6 +78,9 @@ pub struct Cli {
     /// Display scale for --offscreen (device pixels per point).
     #[arg(long, value_name = "X", default_value_t = 1.0, hide = true)]
     pub ppp: f32,
+    /// Cast every castable headset once as soon as it is online (testing, unattended hubs).
+    #[arg(long, hide = true)]
+    pub cast_on_start: bool,
     /// Open a dialog at start (testing): settings, verify, edit, calibrate, guide, add-ip, focus, nav, fix.
     #[arg(long, value_name = "WHAT", hide = true)]
     pub show: Option<String>,
@@ -124,6 +127,7 @@ impl Cli {
             show: self.show.clone(),
             decoder_threads: self.decoder_threads,
             offscreen: self.offscreen.is_some(),
+            cast_on_start: self.cast_on_start,
         })
     }
 

@@ -360,7 +360,10 @@ impl App {
                                 self.cmds.push(Cmd::Open(Dialog::verify(&self.model, &id)));
                             }
                         }
-                        Primary::ConnectUsbToVerify { can_cast } => {
+                        Primary::ConnectUsbToVerify {
+                            can_cast,
+                            streaming,
+                        } => {
                             ui.add(
                                 egui::Label::new(
                                     RichText::new("Connect via USB once to verify")
@@ -369,7 +372,16 @@ impl App {
                                 )
                                 .wrap(),
                             );
-                            if *can_cast
+                            if *streaming {
+                                if Btn::new("Stop")
+                                    .with_icon(Icon::Stop)
+                                    .danger()
+                                    .show(ui)
+                                    .clicked()
+                                {
+                                    self.cmds.push(Cmd::Stop(id.clone()));
+                                }
+                            } else if *can_cast
                                 && Btn::new("Cast").with_icon(Icon::Play).show(ui).clicked()
                             {
                                 self.cmds.push(Cmd::Cast(id.clone(), None));

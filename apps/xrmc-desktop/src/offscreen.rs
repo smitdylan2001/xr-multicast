@@ -46,7 +46,7 @@ fn render_state() -> Result<egui_wgpu::RenderState, String> {
 
 fn draw(
     rs: &egui_wgpu::RenderState,
-    out: egui::FullOutput,
+    mut out: egui::FullOutput,
     ctx: &egui::Context,
     size: [u32; 2],
 ) -> Vec<u8> {
@@ -114,6 +114,7 @@ fn draw(
             r.free_texture(id);
         }
     }
+    out.textures_delta.clear();
     let padded = (size[0] * 4).div_ceil(256) * 256;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,

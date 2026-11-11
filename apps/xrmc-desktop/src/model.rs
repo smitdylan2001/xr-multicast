@@ -178,9 +178,10 @@ pub fn now_ms() -> u64 {
 pub enum Primary {
     Offline(String),
     Verify,
-    /// Not verified and not on USB.
+    /// Not verified and not on USB (may still cast when verification isn't required).
     ConnectUsbToVerify {
         can_cast: bool,
+        streaming: bool,
     },
     Cast,
     Stop,
@@ -298,6 +299,7 @@ pub fn card_for(h: &HeadsetSnapshot, st: Option<&StreamState>, now_ms: u64) -> C
     } else if !h.trusted {
         Primary::ConnectUsbToVerify {
             can_cast: h.can_cast,
+            streaming,
         }
     } else if streaming {
         Primary::Stop
@@ -1363,7 +1365,13 @@ mod tests {
         let Card::Headset(c) = card_for(&u, None, 0) else {
             panic!()
         };
-        assert_eq!(c.primary, Primary::ConnectUsbToVerify { can_cast: true });
+        assert_eq!(
+            c.primary,
+            Primary::ConnectUsbToVerify {
+                can_cast: true,
+                streaming: false
+            }
+        );
         assert_eq!(c.wifi.as_deref(), Some("192.168.1.51"));
 
         let mut off = headset("C", 3);

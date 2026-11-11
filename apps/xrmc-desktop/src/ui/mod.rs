@@ -43,6 +43,8 @@ pub struct AppOptions {
     pub decoder_threads: u32,
     /// Rendered by [`crate::offscreen`]: screenshots and exit are handled there.
     pub offscreen: bool,
+    /// Cast each castable headset once when it comes online.
+    pub cast_on_start: bool,
 }
 
 /// Something the user did; applied after the frame is laid out.
@@ -99,6 +101,7 @@ pub struct App {
     shot_requested: bool,
     pending_casts: Vec<(String, Option<TransportPreference>, bool)>,
     demo_autocast: bool,
+    auto_cast_done: HashSet<String>,
     quit_ok: bool,
     show_done: bool,
 }
@@ -162,6 +165,7 @@ impl App {
             shot_requested: false,
             pending_casts: Vec::new(),
             demo_autocast: demo,
+            auto_cast_done: HashSet::new(),
             quit_ok: false,
             show_done: false,
         }
@@ -697,7 +701,7 @@ impl App {
 
     fn automation(&mut self, ctx: &egui::Context) {
         let t = self.start.elapsed().as_secs_f32();
-        if !self.show_done && t > 0.3 {
+        if !self.show_done && t > 2.0 {
             self.show_done = true;
             if let Some(what) = self.opts.show.clone() {
                 self.show_for_screenshot(&what);
@@ -786,6 +790,11 @@ impl App {
                 }
             }
             "nav" => self.nav_open = true,
+            "snapshot" => {
+                if let Some(id) = first_tile {
+                    self.cmds.push(Cmd::Snapshot(id));
+                }
+            }
             "fix" => self
                 .cmds
                 .push(Cmd::Open(Dialog::Fix(Fix::BatteryLow("Demo booth".into())))),
@@ -929,6 +938,14 @@ impl App {
             self.demo_autocast = false;
             self.cmds.push(Cmd::CastAll);
         }
+        if self.opts.cast_on_start {
+            for id in self.model.castable_not_streaming() {
+                if self.auto_cast_done.insert(id.clone()) {
+                    tracing::info!("casting {id} (--cast-on-start)");
+                    self.cmds.push(Cmd::Cast(id, None));
+                }
+            }
+        }
         self.apply_cmds(&ctx);
         self.flush_casts(&ctx);
         self.report_view_sizes(&ctx, false);
@@ -937,6 +954,11 @@ impl App {
         if let Some(next) = self.model.expire_toasts(Instant::now()) {
             ctx.request_repaint_after(next.saturating_duration_since(Instant::now()));
         }
+    }
+
+    /// The view model (for tests and tools).
+    pub fn model(&self) -> &Model {
+        &self.model
     }
 
     /// The UI scale currently in effect (zoom on top of the display's scaling).
