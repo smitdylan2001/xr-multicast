@@ -27,3 +27,7 @@ openh264-sys2 = { version = "0.9.10", default-features = false, features = ["lib
 [target.'cfg(target_os = "linux")'.dependencies]
 openh264 = { version = "0.9.10", default-features = false, features = ["source", "libloading"] }
 openh264-sys2 = { version = "0.9.10", default-features = false, features = ["source", "libloading"] }
+
+# Android: NDK AMediaCodec (hardware decoders).
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = { version = "0.6.0", features = ["media"] }

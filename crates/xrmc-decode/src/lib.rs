@@ -17,9 +17,15 @@
 use std::fmt;
 use std::sync::OnceLock;
 
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod android;
 mod ffmpeg;
 mod openh264;
 mod stream;
+
+#[cfg(target_os = "android")]
+pub use android::{AndroidCodecInfo, set_codec_list};
 
 /// Video codecs scrcpy can send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -224,9 +230,14 @@ pub fn openh264_version() -> Option<&'static str> {
 /// What this machine can decode (probed once by opening each decoder, then cached).
 pub fn capabilities() -> Capabilities {
     static CAPS: OnceLock<Capabilities> = OnceLock::new();
-    CAPS.get_or_init(probe_capabilities).clone()
+    #[cfg(target_os = "android")]
+    let probe = android::probe_capabilities;
+    #[cfg(not(target_os = "android"))]
+    let probe = probe_capabilities;
+    CAPS.get_or_init(probe).clone()
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn probe_capabilities() -> Capabilities {
     let ff = ffmpeg::lib();
     let probe = |codec| ff.and_then(|lib| lib.probe(codec));
@@ -282,8 +293,17 @@ pub fn create_with(
     options: DecoderOptions,
     backend: Backend,
 ) -> Result<Box<dyn Decoder>, DecodeError> {
+    // Android: MediaCodec first (no FFmpeg there), then OpenH264.
+    #[cfg(target_os = "android")]
+    if matches!(backend, Backend::Auto | Backend::MediaCodec) {
+        match android::MediaCodecDecoder::open(codec, options) {
+            Ok(dec) => return Ok(Box::new(dec)),
+            Err(e) if backend == Backend::MediaCodec => return Err(e),
+            Err(e) => tracing::warn!("MediaCodec {}: {e}", codec.as_str()),
+        }
+    }
     let mut ff_err = None;
-    if matches!(backend, Backend::Auto | Backend::Ffmpeg) {
+    if backend == Backend::Ffmpeg || (backend == Backend::Auto && !cfg!(target_os = "android")) {
         match ffmpeg::lib() {
             Some(lib) => match ffmpeg::FfmpegDecoder::open(lib, codec, options) {
                 Ok(dec) => return Ok(Box::new(dec)),
