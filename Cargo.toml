@@ -1,7 +1,7 @@
 # XR MultiCast native core (shared by the desktop apps on Windows/macOS/Linux, Android, and headless hubs).
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,8 @@ xrmc-scrcpy = { path = "crates/xrmc-scrcpy" }
 xrmc-media = { path = "crates/xrmc-media" }
 xrmc-core = { path = "crates/xrmc-core" }
 xrmc-hub = { path = "crates/xrmc-hub" }
+xrmc-decode = { path = "crates/xrmc-decode" }
+xrmc-render = { path = "crates/xrmc-render" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
 bytes = "1"

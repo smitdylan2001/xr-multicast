@@ -1,0 +1,12 @@
+[package]
+name = "xrmc-decode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Video decoding for XR MultiCast: H.264/H.265/AV1 bitstreams to YUV frames."
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "xrmc-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "wgpu compositor for XR MultiCast: lens-corrected video tiles in one render pass, with egui integration."
+
+[dependencies]
+xrmc-decode.workspace = true
+egui = "0.37"
+egui-wgpu = "0.37"
+wgpu = "30"
+bytemuck = { version = "1.25", features = ["derive"] }

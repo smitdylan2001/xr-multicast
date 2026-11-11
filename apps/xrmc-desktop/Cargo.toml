@@ -1,0 +1,20 @@
+[package]
+name = "xrmc-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "XR MultiCast native desktop app (Windows, macOS, Linux incl. single-board computers with touchscreens)."
+
+[[bin]]
+name = "xr-multicast"
+path = "src/main.rs"
+
+[dependencies]
+xrmc-core.workspace = true
+xrmc-hub.workspace = true
+xrmc-decode.workspace = true
+xrmc-render.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
