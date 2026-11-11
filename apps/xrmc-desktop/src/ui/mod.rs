@@ -798,9 +798,11 @@ impl App {
             "fix" => self
                 .cmds
                 .push(Cmd::Open(Dialog::Fix(Fix::BatteryLow("Demo booth".into())))),
-            "status" => self.cmds.push(Cmd::Open(Dialog::Fix(Fix::NoDecoder(
-                "none (not implemented yet)".into(),
-            )))),
+            "status" => {
+                let backend = self.model.env.decoder.clone();
+                self.cmds
+                    .push(Cmd::Open(Dialog::Fix(Fix::NoDecoder(backend))));
+            }
             other => tracing::warn!("--show {other}: unknown"),
         }
     }

@@ -390,7 +390,12 @@ impl StreamBackend for DemoStreams {
         let (stop_tx, mut stop) = watch::channel(false);
         tokio::spawn(async move {
             // Connecting and starting the encoder takes a moment on a real headset.
-            tokio::time::sleep(Duration::from_millis(250 + 40 * style as u64)).await;
+            // `XRMC_DEMO_CONNECT_MS` slows this down (e.g. to look at "Changing resolution").
+            let base = std::env::var("XRMC_DEMO_CONNECT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(250);
+            tokio::time::sleep(Duration::from_millis(base + 40 * style as u64)).await;
             let _ = tx.send(SessionEvent::Device(f.model.to_string())).await;
             let _ = tx
                 .send(SessionEvent::Session {
