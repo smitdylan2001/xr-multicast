@@ -6,6 +6,11 @@ with a touchscreen acting as the hub. Built with egui/eframe and wgpu, on top of
 `xrmc-hub` (devices and streams), `xrmc-decode` (video decoding) and `xrmc-render`
 (lens-correction compositor).
 
+The crate is also the UI library of the Android app (`apps/xrmc-android`): everything
+platform-specific goes through the `Platform` trait in `src/platform.rs`. That covers USB devices
+handed to the hub, the scan multicast lock, keep-screen-on, the back button, the soft keyboard and
+file locations.
+
 ## Run
 
 ```bash
@@ -42,6 +47,8 @@ scrcpy-server is looked up next to the executable, then `$XRMC_SCRCPY_SERVER`, t
 | `ui/*` | Top bar, sidebar (drawer on narrow/portrait screens), tiles, dialogs, calibration drawer (bottom sheet on portrait), status bar, toasts, vector icons. |
 | `demo` | Synthetic headsets: a `StreamBackend` and `DeviceDirectory` for the core's `StreamManager`, and a decoder that draws stereo test panels. |
 | `offscreen` | Renders the whole app into a texture at any size (no window): screenshots for any screen from any machine. |
+| `platform` | `Platform` trait (desktop default; Android implementation in `apps/xrmc-android`). |
+| `ui/codecs` | Video codecs view: the headset's hardware encoders next to this receiver's decoders. It has a green/amber/red matrix for H.264 / H.265 / AV1 (8 and 10 bit), and amber/red rows explain the fix when tapped. It also shows which codec the policy picks for the current and next stream, and why. Open it from Settings → Video, a headset's menu, a tile's menu, or by tapping a tile's stats line. |
 
 ## Testing
 
@@ -55,5 +62,5 @@ xr-multicast --demo 9 --offscreen 1600x1000 --show calibrate --screenshot calib.
 xr-multicast --demo 9 --screenshot window.png --exit-after 8
 ```
 
-`--show` opens `settings`, `verify`, `edit`, `calibrate`, `guide`, `add-ip`, `focus`, `nav`, `fix` or `snapshot`
+`--show` opens `settings`, `verify`, `edit`, `calibrate`, `guide`, `add-ip`, `focus`, `nav`, `fix`, `codecs` or `snapshot`
 after 2 seconds. `--cast-on-start` casts every castable headset once (unattended tests).
