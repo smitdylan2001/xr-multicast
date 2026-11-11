@@ -1,5 +1,6 @@
 [package]
 name = "xrmc-adb"
+description = "Pure-Rust ADB client (USB, TCP and adb-server transports) for XR MultiCast"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +12,14 @@ tokio.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Host key: RSA-2048, PKCS#1 v1.5 signatures over the raw AUTH token (treated as a SHA-1 digest).
+rsa = { version = "0.10.0", features = ["pkcs1v15"] }
+sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
+rand = { version = "0.10.3", default-features = false, features = ["std", "sys_rng"] }
+base64 = "0.22.1"
+# Pure-Rust USB host access (usbfs on Linux/Android, IOKit on macOS, WinUSB on Windows).
+nusb = { version = "0.2.9", features = ["tokio"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+sha2 = "0.11.0"
