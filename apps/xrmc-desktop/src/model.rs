@@ -790,8 +790,10 @@ pub fn grid_columns(
         } else {
             chrome_h
         };
+        // Tiles below the minimum height make the grid scroll: some streams are hidden.
+        let scrolls = th < MIN_TILE_H.min(h);
         let th = (th - chrome).max(0.0);
-        tw.min(th * aspect)
+        tw.min(th * aspect) * if scrolls { 0.5 } else { 1.0 }
     };
     let best = (1..=n.min(6))
         .max_by(|a, b| score(*a).total_cmp(&score(*b)))
@@ -1677,6 +1679,10 @@ mod tests {
         let (r, h) = grid_rects(1000.0, 300.0, 12, 4, 10.0);
         assert_eq!(r[11][3], MIN_TILE_H);
         assert!(h > 300.0);
+        // Twelve streams on a 1024×600 screen: fit them all rather than scroll.
+        let cols = grid_columns("auto", 12, false, (710.0, 470.0), 116.0);
+        let (_, h) = grid_rects(710.0, 470.0, 12, cols, 12.0);
+        assert!(h <= 470.0, "{cols} columns scroll");
     }
 
     #[test]

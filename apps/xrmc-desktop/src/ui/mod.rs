@@ -826,6 +826,9 @@ impl App {
             .map(|p| p as u32 + 1);
             (i.key_pressed(Key::Escape), digit)
         });
+        if ctx.input(|i| i.key_pressed(Key::F11)) && !self.opts.kiosk {
+            self.cmds.push(Cmd::ToggleFullscreen);
+        }
         if esc {
             if self.app_full.is_some() {
                 self.exit_app_full(ctx);

@@ -41,7 +41,7 @@ impl App {
                     }
                     let (rect, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
                     icons::logo(ui.painter(), rect, theme::ACCENT);
-                    if width >= 1000.0 || (overflow && width >= 560.0) {
+                    if width >= 900.0 || (overflow && width >= 560.0) {
                         ui.label(
                             egui::RichText::new("XR MultiCast")
                                 .font(theme::font_bold(17.0))
@@ -72,14 +72,15 @@ impl App {
                 .width(240.0)
                 .show(|ui| self.topbar_menu(ui));
         } else {
-            if Btn::icon(full_icon)
-                .tooltip(if self.window_full {
-                    "Leave fullscreen"
-                } else {
-                    "Fullscreen"
-                })
-                .show(ui)
-                .clicked()
+            if !self.opts.kiosk
+                && Btn::icon(full_icon)
+                    .tooltip(if self.window_full {
+                        "Leave fullscreen"
+                    } else {
+                        "Fullscreen"
+                    })
+                    .show(ui)
+                    .clicked()
             {
                 self.cmds.push(Cmd::ToggleFullscreen);
             }
@@ -202,7 +203,7 @@ impl App {
         } else {
             "Fullscreen"
         };
-        if item(ui, Icon::Expand, label) {
+        if !self.opts.kiosk && item(ui, Icon::Expand, label) {
             self.cmds.push(Cmd::ToggleFullscreen);
             ui.close();
         }

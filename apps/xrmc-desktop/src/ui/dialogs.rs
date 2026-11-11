@@ -1,9 +1,7 @@
 //! Dialogs: verify, rename/colour, add by IP, settings, connection guide,
 //! fix explanations (for amber/red statuses), forget and quit confirmations.
 
-use eframe::egui::{
-    self, Align, Color32, Layout, Margin, RichText, Sense, Stroke, StrokeKind, vec2,
-};
+use eframe::egui::{self, Align, Color32, Layout, Margin, RichText, Sense, Stroke, vec2};
 use serde_json::json;
 use xrmc_core::config::{Codec, CodecPreference, HEADSET_COLORS, QualityKey, quality_presets};
 use xrmc_core::settings::CustomQuality;
@@ -53,6 +51,8 @@ pub enum Dialog {
     },
     Settings {
         draft: Box<Settings>,
+        /// The settings when the dialog opened: only what the user changed is saved.
+        orig: Box<Settings>,
         scale: f32,
         busy: Option<u64>,
     },
@@ -116,6 +116,7 @@ impl Dialog {
     pub fn settings(m: &Model, scale: f32) -> Dialog {
         Dialog::Settings {
             draft: Box::new(m.settings.clone()),
+            orig: Box::new(m.settings.clone()),
             scale,
             busy: None,
         }
@@ -619,12 +620,14 @@ impl App {
                     return Some(Outcome::Close);
                 }
             }
-            Dialog::Settings { draft, scale, .. } => {
+            Dialog::Settings {
+                draft, orig, scale, ..
+            } => {
                 if primary(ui, "Save", true) {
                     self.ui_scale = *scale;
-                    let mut s = (**draft).clone();
-                    s.extra.insert(UI_SCALE_KEY.into(), json!(*scale));
-                    return Some(Outcome::Send(Action::UpdateSettings { patch: s.to_json() }));
+                    let mut patch = settings_patch(orig, draft);
+                    patch.insert(UI_SCALE_KEY.into(), json!(*scale));
+                    return Some(Outcome::Send(Action::UpdateSettings { patch }));
                 }
                 if cancel(ui, "Cancel") {
                     return Some(Outcome::Close);
@@ -941,6 +944,16 @@ impl App {
     }
 }
 
+/// The settings the user changed (so concurrent changes, e.g. `nextIndex` from a
+/// verification, are not overwritten with stale values).
+pub fn settings_patch(
+    orig: &Settings,
+    draft: &Settings,
+) -> serde_json::Map<String, serde_json::Value> {
+    let (a, b) = (orig.to_json(), draft.to_json());
+    b.into_iter().filter(|(k, v)| a.get(k) != Some(v)).collect()
+}
+
 fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
     ui.label(
@@ -1195,9 +1208,20 @@ fn fix_body(ui: &mut egui::Ui, f: &Fix) {
     }
 }
 
-/// Paint a coloured outline around a widget (used for focus hints).
-#[allow(dead_code)]
-pub fn outline(ui: &egui::Ui, r: egui::Rect, c: Color32) {
-    ui.painter()
-        .rect_stroke(r, 8.0, Stroke::new(1.5, c), StrokeKind::Outside);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_patch_has_only_changes() {
+        let orig = Settings::default();
+        let mut draft = orig.clone();
+        draft.ten_bit = true;
+        draft.usb_quality = QualityKey::Custom;
+        let p = settings_patch(&orig, &draft);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p["tenBit"], json!(true));
+        assert_eq!(p["usbQuality"], json!("custom"));
+        assert!(settings_patch(&orig, &orig).is_empty());
+    }
 }

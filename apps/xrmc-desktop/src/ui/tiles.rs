@@ -161,10 +161,12 @@ impl App {
         // Label over the video: always visible, so every picture is identifiable.
         let label = model::label_of(h);
         let sub = model::brand_model(&brand.name, h.map(|h| h.model.as_str()).unwrap_or(""));
-        let live_w = if compact && live {
-            widgets::badge_width(ui, "LIVE", 11.0) + 12.0
-        } else {
-            0.0
+        // Tiny tiles show LIVE as a red dot to leave room for the name.
+        let live_dot = compact && body.width() < 240.0;
+        let live_w = match (compact && live, live_dot) {
+            (false, _) => 0.0,
+            (true, true) => 22.0,
+            (true, false) => widgets::badge_width(ui, "LIVE", 11.0) + 12.0,
         };
         video_label(
             &body_painter,
@@ -176,14 +178,22 @@ impl App {
             live_w,
         );
         if compact && live {
-            widgets::badge(
-                &body_painter,
-                pos2(body.max.x - live_w, body.min.y + 22.0),
-                "LIVE",
-                11.0,
-                theme::BAD,
-                Color32::WHITE,
-            );
+            if live_dot {
+                body_painter.circle_filled(
+                    pos2(body.max.x - 16.0, body.min.y + 22.0),
+                    6.0,
+                    theme::BAD,
+                );
+            } else {
+                widgets::badge(
+                    &body_painter,
+                    pos2(body.max.x - live_w, body.min.y + 22.0),
+                    "LIVE",
+                    11.0,
+                    theme::BAD,
+                    Color32::WHITE,
+                );
+            }
         }
 
         // Status (starting, reconnecting, changing resolution, errors).
@@ -205,10 +215,12 @@ impl App {
         // Compact tiles: tools and stop at the bottom right of the video.
         let tools_w = if compact { 2.0 * 44.0 + 6.0 + 8.0 } else { 0.0 };
         if compact {
-            let y = body.max.y - 50.0;
-            let stop = Rect::from_min_size(pos2(body.max.x - 50.0, y), vec2(44.0, 44.0));
-            let more = Rect::from_min_size(pos2(body.max.x - 100.0, y), vec2(44.0, 44.0));
-            body_painter.rect_filled(more.union(stop), 10.0, Color32::from_black_alpha(150));
+            let y = body.max.y - 52.0;
+            let stop = Rect::from_min_size(pos2(body.max.x - 52.0, y), vec2(44.0, 44.0));
+            let more = Rect::from_min_size(pos2(body.max.x - 102.0, y), vec2(44.0, 44.0));
+            body_painter.circle_filled(more.center(), 20.0, Color32::from_black_alpha(170));
+            body_painter.circle_filled(stop.center(), 20.0, Color32::from_black_alpha(170));
+            body_painter.circle_stroke(stop.center(), 20.0, Stroke::new(1.0, theme::DANGER_LINE));
             if Btn::icon(Icon::Stop)
                 .kind(Kind::GhostDanger)
                 .tooltip("Stop casting")
@@ -232,6 +244,7 @@ impl App {
             && !footer_fits_stats
             && status.is_none()
             && body.width() - tools_w > 90.0
+            && (!compact || body.width() >= 300.0)
         {
             let font = theme::font(12.0);
             let text = widgets::fit_text(
@@ -326,22 +339,32 @@ impl App {
             pos2(head.min.x + 12.0, head.center().y - 19.0),
             vec2(38.0, 38.0),
         );
-        let num = h
-            .and_then(|h| h.index)
-            .map(|i| format!("#{i}"))
-            .unwrap_or_else(|| "•".into());
-        let num_w = widgets::text_width(ui, &num, theme::font_bold(16.0)) + 14.0;
+        let num = h.and_then(|h| h.index).map(|i| format!("#{i}"));
+        let num_w = num.as_ref().map_or(0.0, |n| {
+            widgets::text_width(ui, n, theme::font_bold(16.0)) + 14.0
+        });
         let idx = Rect::from_min_size(idx.min, vec2(num_w.max(38.0), 38.0));
         painter.rect_filled(idx, 8.0, color);
-        painter.text(
-            idx.center(),
-            Align2::CENTER_CENTER,
-            &num,
-            theme::font_bold(16.0),
-            theme::on_color(color),
-        );
+        match &num {
+            Some(n) => {
+                painter.text(
+                    idx.center(),
+                    Align2::CENTER_CENTER,
+                    n,
+                    theme::font_bold(16.0),
+                    theme::on_color(color),
+                );
+            }
+            // Not verified yet, so no number.
+            None => icons::paint(
+                painter,
+                idx.shrink(7.0),
+                Icon::Headset,
+                theme::on_color(color),
+            ),
+        }
 
-        // Right side: (compact: stop + menu) LIVE, connection, brand.
+        // Right side: LIVE, connection, brand.
         let mut x = head.max.x - 10.0;
         let cy = head.center().y;
         if live {
