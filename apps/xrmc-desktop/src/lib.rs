@@ -15,6 +15,7 @@ pub mod decode;
 pub mod demo;
 pub mod model;
 pub mod offscreen;
+pub mod platform;
 pub mod theme;
 pub mod ui;
 pub mod view_report;

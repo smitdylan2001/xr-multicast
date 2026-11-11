@@ -2,6 +2,7 @@
 //! drawer, status bar, dialogs and toasts.
 
 pub mod calibration;
+pub mod codecs;
 pub mod dialogs;
 pub mod icons;
 pub mod sidebar;
@@ -12,6 +13,7 @@ pub mod widgets;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, Rect};
@@ -24,6 +26,7 @@ use xrmc_render::VideoRenderer;
 
 use crate::bridge::{Action, Bridge, Mode, Reply, UiEvent};
 use crate::model::{self, Model};
+use crate::platform::Platform;
 use crate::theme;
 use crate::view_report::{DEFAULT_DELAY, ViewReporter};
 use dialogs::{Dialog, Fix};
@@ -45,6 +48,8 @@ pub struct AppOptions {
     pub offscreen: bool,
     /// Cast each castable headset once when it comes online.
     pub cast_on_start: bool,
+    /// Desktop or Android services (USB, keyboard, files, screen).
+    pub platform: Arc<dyn Platform>,
 }
 
 /// Something the user did; applied after the frame is laid out.
@@ -104,6 +109,7 @@ pub struct App {
     auto_cast_done: HashSet<String>,
     quit_ok: bool,
     show_done: bool,
+    screen_on: bool,
 }
 
 /// UI scale stored in the settings file (unknown to the Electron app, which keeps it).
@@ -134,11 +140,13 @@ impl App {
             None => (None, "no GPU renderer".into()),
         };
         tracing::info!("GPU: {gpu}");
+        opts.platform.start(&ctx);
         let wake_ctx = ctx.clone();
-        let bridge = Bridge::start(
+        let bridge = Bridge::start_with(
             opts.mode.clone(),
-            std::sync::Arc::new(move || wake_ctx.request_repaint()),
+            Arc::new(move || wake_ctx.request_repaint()),
             opts.decoder_threads,
+            opts.platform.clone(),
         );
         let demo = matches!(opts.mode, Mode::Demo { .. });
         let fullscreen = opts.fullscreen || opts.kiosk;
@@ -168,6 +176,7 @@ impl App {
             auto_cast_done: HashSet::new(),
             quit_ok: false,
             show_done: false,
+            screen_on: false,
         }
     }
 
@@ -245,11 +254,16 @@ impl App {
                 }
             }
         }
-        if let Some(Dialog::Edit {
-            enc_ticket,
-            encoders,
-            ..
-        }) = &mut self.dialog
+        let enc_slot = match &mut self.dialog {
+            Some(Dialog::Edit {
+                enc_ticket,
+                encoders,
+                ..
+            }) => Some((enc_ticket, encoders)),
+            Some(Dialog::Codecs(st)) => Some((&mut st.enc_ticket, &mut st.encoders)),
+            _ => None,
+        };
+        if let Some((enc_ticket, encoders)) = enc_slot
             && *enc_ticket == Some(ticket)
         {
             *encoders = Some(match &result {
@@ -263,6 +277,7 @@ impl App {
             (Action::Cast { id, .. }, Err(e)) => self.model.on_cast_failed(id, e),
             (Action::Scan, r) => {
                 self.scan_busy = false;
+                self.opts.platform.network_scan(false);
                 match r {
                     Ok(Reply::Scan(s)) => {
                         let (msg, level) = model::scan_summary(&s);
@@ -406,6 +421,7 @@ impl App {
                             NoticeLevel::Info,
                             "Scanning the local network for headsets…",
                         );
+                        self.opts.platform.network_scan(true);
                         self.send(Action::Scan);
                     }
                 }
@@ -528,6 +544,17 @@ impl App {
     }
 
     fn open_dialog(&mut self, d: Dialog) {
+        if let Dialog::Codecs(st) = &d
+            && let Some(id) = st.id.clone()
+        {
+            let ticket = self.send(Action::Encoders { id });
+            let mut d = d;
+            if let Dialog::Codecs(st) = &mut d {
+                st.enc_ticket = Some(ticket);
+            }
+            self.dialog = Some(d);
+            return;
+        }
         if let Dialog::Edit { id, .. } = &d {
             let ticket = self.send(Action::Encoders { id: id.clone() });
             let mut d = d;
@@ -605,7 +632,7 @@ impl App {
                 }
             })
             .collect();
-        let dir = snapshot_dir();
+        let dir = self.opts.platform.snapshot_dir();
         let path = dir.join(format!("{safe}-{}.png", chrono_stamp()));
         let id = id.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -798,6 +825,10 @@ impl App {
             "fix" => self
                 .cmds
                 .push(Cmd::Open(Dialog::Fix(Fix::BatteryLow("Demo booth".into())))),
+            "codecs" => {
+                let id = first_tile.or(first_trusted);
+                self.cmds.push(Cmd::Open(Dialog::codecs(id)));
+            }
             "status" => {
                 let backend = self.model.env.decoder.clone();
                 self.cmds
@@ -881,8 +912,10 @@ impl App {
             self.dialog = Some(Dialog::Quit);
         }
         self.handle_events();
+        self.poll_platform();
         self.poll_snapshots();
         self.pull_frames();
+        self.back_button(&ctx);
         self.keyboard(&ctx);
 
         let screen = ctx.content_rect();
@@ -961,6 +994,43 @@ impl App {
         }
     }
 
+    /// Platform notices, and keep the screen on while streams are shown.
+    fn poll_platform(&mut self) {
+        for n in self.opts.platform.poll_notices() {
+            self.toast(n.level, n.message);
+        }
+        let on = !self.model.tiles.is_empty();
+        if on != self.screen_on {
+            self.screen_on = on;
+            self.opts.platform.keep_screen_on(on);
+        }
+    }
+
+    /// Android back button: close the innermost thing that is open, else leave
+    /// the app (streams keep running in the background).
+    fn back_button(&mut self, ctx: &egui::Context) {
+        if !ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::BrowserBack)) {
+            return;
+        }
+        if let Some(d) = &self.dialog {
+            if d.busy_ticket().is_none() {
+                self.dialog = None;
+            }
+        } else if ctx.text_edit_focused() {
+            ctx.memory_mut(|m| m.stop_text_input());
+        } else if self.app_full.is_some() {
+            self.exit_app_full(ctx);
+        } else if self.model.calib.is_some() {
+            self.cmds.push(Cmd::CloseCalibration { save: false });
+        } else if self.nav_open {
+            self.nav_open = false;
+        } else if self.model.focus.is_some() {
+            self.model.set_focus(None);
+        } else {
+            self.opts.platform.back_at_root();
+        }
+    }
+
     /// The view model (for tests and tools).
     pub fn model(&self) -> &Model {
         &self.model
@@ -973,19 +1043,6 @@ impl App {
 }
 
 // ------------------------------------------------------------------ files
-
-fn snapshot_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let pictures = home.join("Pictures");
-    if pictures.is_dir() {
-        pictures.join("XR MultiCast")
-    } else {
-        home.join("XR MultiCast snapshots")
-    }
-}
 
 fn chrono_stamp() -> String {
     let secs = std::time::SystemTime::now()

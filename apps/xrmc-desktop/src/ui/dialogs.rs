@@ -9,11 +9,13 @@ use xrmc_core::stream_manager::EncodersReply;
 use xrmc_core::view_size::ViewMode;
 use xrmc_core::{Settings, TransportKind, TransportPreference};
 
+use super::codecs::{self, CodecsState};
 use super::icons::{self, Icon};
 use super::widgets::{self, Btn, Kind, Run};
 use super::{App, Cmd, UI_SCALE_KEY};
 use crate::bridge::Action;
 use crate::model::{self, Model, VIEW_MODES};
+use crate::platform::TextKind;
 use crate::theme;
 
 /// What an amber or red status means and how to fix it.
@@ -63,6 +65,8 @@ pub enum Dialog {
     Forget {
         id: String,
     },
+    /// Headset encoders vs. this device's decoders, and the negotiated codec.
+    Codecs(Box<CodecsState>),
     Quit,
 }
 
@@ -104,6 +108,16 @@ impl Dialog {
             enc_ticket: None,
             encoders: None,
         }
+    }
+
+    /// The codecs view for a headset (`None`: only this device's decoders).
+    pub fn codecs(id: Option<String>) -> Dialog {
+        Dialog::Codecs(Box::new(CodecsState {
+            id,
+            enc_ticket: None,
+            encoders: None,
+            open: None,
+        }))
     }
 
     pub fn add_ip() -> Dialog {
@@ -169,7 +183,10 @@ impl App {
             return;
         };
         let screen = ctx.content_rect();
-        let wide = matches!(d, Dialog::Settings { .. } | Dialog::Guide { .. });
+        let wide = matches!(
+            d,
+            Dialog::Settings { .. } | Dialog::Guide { .. } | Dialog::Codecs(_)
+        );
         let width = (if wide { 780.0_f32 } else { 540.0 }).min(screen.width() - 24.0);
         let max_body = (screen.height() - 190.0).max(160.0);
         let title = match &d {
@@ -180,11 +197,24 @@ impl App {
             Dialog::Guide { .. } => "Connecting headsets".into(),
             Dialog::Fix(f) => fix_title(f).into(),
             Dialog::Forget { .. } => "Forget headset?".into(),
+            Dialog::Codecs(_) => "Video codecs".into(),
             Dialog::Quit => "Quit XR MultiCast?".into(),
         };
         let busy = d.busy_ticket().is_some();
         let mut outcome = None;
+        let keyboard = self.opts.platform.keyboard_height();
+        let max_body = if keyboard > 0.0 {
+            (screen.height() - keyboard - 170.0).max(120.0)
+        } else {
+            max_body
+        };
+        let mut area = egui::Modal::default_area(egui::Id::unique("dialog"));
+        if keyboard > 0.0 {
+            // Keep the dialog above the on-screen keyboard.
+            area = area.anchor(egui::Align2::CENTER_TOP, vec2(0.0, 12.0));
+        }
         let modal = egui::Modal::new(egui::Id::unique("dialog"))
+            .area(area)
             .backdrop_color(Color32::from_black_alpha(150))
             .frame(
                 egui::Frame::new()
@@ -342,7 +372,7 @@ impl App {
                     "Verifying confirms this exact headset (by hardware serial) is allowed to cast to this computer. Give it a clear label — it is shown on its stream at all times.",
                 );
                 field_label(ui, "Label");
-                ui.add(
+                let r = ui.add(
                     egui::TextEdit::singleline(name)
                         .hint_text("e.g. Station 3, Trainee Alex")
                         .char_limit(40)
@@ -350,6 +380,9 @@ impl App {
                         .min_size(vec2(0.0, 44.0))
                         .align(egui::Align2::LEFT_CENTER),
                 );
+                self.opts
+                    .platform
+                    .text_input(ui.ctx(), &r, name, TextKind::Text);
                 field_label(ui, "Colour");
                 swatches(ui, color);
                 widgets::check_row(
@@ -370,13 +403,16 @@ impl App {
             } => {
                 let h = self.model.headset(id).cloned();
                 field_label(ui, "Label");
-                ui.add(
+                let r = ui.add(
                     egui::TextEdit::singleline(name)
                         .char_limit(40)
                         .desired_width(f32::INFINITY)
                         .min_size(vec2(0.0, 44.0))
                         .align(egui::Align2::LEFT_CENTER),
                 );
+                self.opts
+                    .platform
+                    .text_input(ui.ctx(), &r, name, TextKind::Text);
                 field_label(ui, "Colour");
                 swatches(ui, color);
                 field_label(ui, "Preferred connection");
@@ -465,6 +501,14 @@ impl App {
                         }
                     },
                 }
+                if Btn::new("Compare with this receiver's decoders")
+                    .kind(Kind::Ghost)
+                    .with_icon(Icon::Info)
+                    .show(ui)
+                    .clicked()
+                {
+                    self.cmds.push(Cmd::Open(Dialog::codecs(Some(id.clone()))));
+                }
                 if let Some(h) = &h {
                     widgets::small_muted(
                         ui,
@@ -492,7 +536,10 @@ impl App {
                         .min_size(vec2(0.0, 44.0))
                         .align(egui::Align2::LEFT_CENTER),
                 );
-                if !r.has_focus() && address.is_empty() {
+                self.opts
+                    .platform
+                    .text_input(ui.ctx(), &r, address, TextKind::Address);
+                if !r.has_focus() && address.is_empty() && !self.opts.platform.is_mobile() {
                     r.request_focus();
                 }
                 if r.lost_focus()
@@ -528,6 +575,10 @@ impl App {
                 ).wrap());
                 None
             }
+            Dialog::Codecs(st) => {
+                self.codecs_body(ui, st);
+                None
+            }
             Dialog::Quit => {
                 widgets::muted(
                     ui,
@@ -536,6 +587,78 @@ impl App {
                 None
             }
         }
+    }
+
+    fn codecs_body(&mut self, ui: &mut egui::Ui, st: &mut CodecsState) {
+        let noun = self.opts.platform.device_noun();
+        let mobile = self.opts.platform.is_mobile();
+        // Headsets with known or queryable encoders: verified ones and anything online.
+        let choices: Vec<(String, String)> = self
+            .model
+            .headsets
+            .iter()
+            .filter(|h| h.trusted || h.is_online())
+            .map(|h| (h.id.clone(), h.name.clone()))
+            .collect();
+        let current = st
+            .id
+            .as_ref()
+            .and_then(|id| choices.iter().find(|(i, _)| i == id))
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "Only this receiver's decoders".into());
+        let mut picked = None;
+        field_label(ui, "Headset");
+        egui::ComboBox::from_id_salt("codecs-headset")
+            .width(ui.available_width())
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(st.id.is_none(), "Only this receiver's decoders")
+                    .clicked()
+                {
+                    picked = Some(None);
+                }
+                for (id, name) in &choices {
+                    if ui
+                        .selectable_label(st.id.as_deref() == Some(id.as_str()), name)
+                        .clicked()
+                    {
+                        picked = Some(Some(id.clone()));
+                    }
+                }
+            });
+        if let Some(p) = picked
+            && p != st.id
+        {
+            st.id = p;
+            st.encoders = None;
+            st.open = None;
+            st.enc_ticket = st.id.clone().map(|id| self.send(Action::Encoders { id }));
+        }
+        let (state, decoder, hardware) = match &st.id {
+            Some(id) => {
+                let out = self.bridge.output(id);
+                (
+                    self.model.streams.get(id).filter(|s| s.state.is_running()),
+                    out.as_ref().map(|o| o.backend()).unwrap_or_default(),
+                    out.is_some_and(|o| o.hardware.load(std::sync::atomic::Ordering::Relaxed)),
+                )
+            }
+            None => (None, String::new(), false),
+        };
+        codecs::body(
+            ui,
+            st,
+            &self.model.env,
+            &self.model.settings,
+            codecs::StreamInfo {
+                state,
+                decoder,
+                hardware,
+            },
+            noun,
+            mobile,
+        );
     }
 
     fn dialog_footer(&mut self, ui: &mut egui::Ui, d: &mut Dialog, busy: bool) -> Option<Outcome> {
@@ -650,9 +773,13 @@ impl App {
                     *d = Dialog::Guide {
                         brand: "meta".into(),
                     };
+                } else if matches!(f, Fix::NoDecoder(_) | Fix::SoftwareDecoder(_))
+                    && Btn::new("Video codecs").show(ui).clicked()
+                {
+                    *d = Dialog::codecs(None);
                 }
             }
-            Dialog::Guide { .. } => {
+            Dialog::Guide { .. } | Dialog::Codecs(_) => {
                 if primary(ui, "Close", true) {
                     return Some(Outcome::Close);
                 }
@@ -756,13 +883,28 @@ impl App {
             .map(|(k, n)| ten(k, n))
             .collect::<Vec<_>>()
             .join(", ");
+        let noun = self.opts.platform.device_noun();
         widgets::small_muted(
             ui,
             format!(
-                "This computer can decode: {decode} ({}). Auto uses H.265, then AV1, only when the headset has a hardware encoder for it and this computer can hardware-decode it; otherwise H.264. A stream that fails to start or decode falls back to H.264 automatically. Changes apply to streams started afterwards.",
+                "This {noun} can decode: {decode} ({}). Auto uses H.265, then AV1, only when the headset has a hardware encoder for it and this {noun} can hardware-decode it; otherwise H.264. A stream that fails to start or decode falls back to H.264 automatically. Changes apply to streams started afterwards.",
                 env.decoder
             ),
         );
+        if Btn::new("Video codecs: headsets vs. this receiver")
+            .with_icon(Icon::Info)
+            .show(ui)
+            .clicked()
+        {
+            let id = self.model.tiles.first().map(|t| t.id.clone()).or_else(|| {
+                self.model
+                    .headsets
+                    .iter()
+                    .find(|h| h.is_online() && h.trusted)
+                    .map(|h| h.id.clone())
+            });
+            self.cmds.push(Cmd::Open(Dialog::codecs(id)));
+        }
         field_label(ui, "Default view");
         let mode_label = |m: ViewMode| {
             VIEW_MODES
@@ -811,23 +953,40 @@ impl App {
         });
         widgets::small_muted(
             ui,
-            "Scales on top of the display's own scaling. Larger sizes suit small touchscreens; start with --kiosk to run fullscreen without window decorations.",
+            if self.opts.platform.is_mobile() {
+                "Scales on top of the display's own scaling. Smaller sizes fit more on a phone; larger sizes suit tablets mounted at a distance."
+            } else {
+                "Scales on top of the display's own scaling. Larger sizes suit small touchscreens; start with --kiosk to run fullscreen without window decorations."
+            },
         );
 
         widgets::heading(ui, "About");
         widgets::small_muted(
             ui,
             format!(
-                "XR MultiCast {} (native) · scrcpy-server {} · Connection: {} · Video decoding: {} · GPU: {}",
-                env.version, env.scrcpy_version, env.adb_mode, env.decoder, self.gpu
+                "XR MultiCast {} (native, {}) · scrcpy-server {} · Connection: {} · Video decoding: {} · GPU: {}",
+                env.version,
+                self.opts.platform.name(),
+                env.scrcpy_version,
+                env.adb_mode,
+                env.decoder,
+                self.gpu
             ),
         );
+        let about = self.opts.platform.about();
+        if !about.is_empty() {
+            widgets::small_muted(ui, about);
+        }
         if let Some(p) = &env.store_path {
             widgets::small_muted(
                 ui,
-                format!(
-                    "Settings and verified headsets: {p} (shared with the XR MultiCast desktop app)"
-                ),
+                if self.opts.platform.is_mobile() {
+                    format!("Settings and verified headsets: {p}")
+                } else {
+                    format!(
+                        "Settings and verified headsets: {p} (shared with the XR MultiCast desktop app)"
+                    )
+                },
             );
         }
         ui.horizontal_wrapped(|ui| {
@@ -913,13 +1072,7 @@ impl App {
             col2(ui);
         }
         ui.label(RichText::new("Troubleshooting").font(theme::font_bold(15.0)));
-        let platform = if cfg!(target_os = "linux") {
-            "Linux: if a USB headset doesn't appear, install the USB rule (packaging/native/install.sh --udev, or the XR MultiCast .deb) and re-plug it. On a Raspberry Pi hub, use a powered USB hub for several headsets."
-        } else if cfg!(target_os = "windows") {
-            "Windows: direct USB needs a WinUSB-compatible ADB driver (Meta: Oculus ADB Drivers; others: Google USB Driver or the vendor's driver). Re-plug after installing."
-        } else {
-            "macOS: no driver needed. Use a USB-C data cable (some charge-only cables won't work)."
-        };
+        let platform = self.opts.platform.usb_hint();
         for (t, d) in [
             ("Platform. ", platform),
             (

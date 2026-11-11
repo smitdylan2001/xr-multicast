@@ -479,6 +479,10 @@ impl App {
             self.cmds.push(Cmd::Open(Dialog::edit(&self.model, &id)));
             ui.close();
         }
+        if item(ui, "Video codecs", false) {
+            self.cmds.push(Cmd::Open(Dialog::codecs(Some(id.clone()))));
+            ui.close();
+        }
         if !c.offline && item(ui, "Calibrate lens correction", false) {
             self.cmds.push(Cmd::Calibrate(id.clone()));
             ui.close();

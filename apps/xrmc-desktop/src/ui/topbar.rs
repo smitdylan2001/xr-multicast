@@ -73,6 +73,7 @@ impl App {
                 .show(|ui| self.topbar_menu(ui));
         } else {
             if !self.opts.kiosk
+                && !self.opts.platform.is_mobile()
                 && Btn::icon(full_icon)
                     .tooltip(if self.window_full {
                         "Leave fullscreen"
@@ -203,7 +204,7 @@ impl App {
         } else {
             "Fullscreen"
         };
-        if !self.opts.kiosk && item(ui, Icon::Expand, label) {
+        if !self.opts.kiosk && !self.opts.platform.is_mobile() && item(ui, Icon::Expand, label) {
             self.cmds.push(Cmd::ToggleFullscreen);
             ui.close();
         }

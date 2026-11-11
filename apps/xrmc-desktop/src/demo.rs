@@ -657,6 +657,18 @@ impl Backend for DemoBackend {
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
+            decoder_details: ["h264", "h265", "av1", "h265_10", "av1_10"]
+                .into_iter()
+                .map(|k| {
+                    let on = k == "h264" || k == "h265";
+                    xrmc_decode::CodecDetail {
+                        key: k.into(),
+                        caps: xrmc_decode::DecodeCaps { any: on, hw: on },
+                        decoder: if on { "demo".into() } else { String::new() },
+                        hw_api: on.then(|| "demo".into()),
+                    }
+                })
+                .collect(),
             local_ips: crate::bridge::local_ips(),
             store_path: None,
             fatal: None,

@@ -26,6 +26,7 @@ use xrmc_hub::{Hub, HubOptions, HubPaths};
 
 use crate::decode::{DecodeFailure, DecoderFactory, Router, StreamOutput, Wake};
 use crate::model::EnvInfo;
+use crate::platform::{HubHandle, Platform};
 use crate::view_report::ViewDiff;
 
 pub type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -234,13 +235,18 @@ pub struct HubBackend {
 }
 
 impl HubBackend {
-    pub fn open(cfg: &HubConfig) -> Result<HubBackend, String> {
+    /// Open the hub. Must be called inside the hub's tokio runtime.
+    pub fn open(cfg: &HubConfig, platform: &dyn Platform) -> Result<HubBackend, String> {
         let mut opts = HubOptions::new(cfg.paths.clone());
         opts.registry.use_server = cfg.use_adb_server;
         opts.registry.direct_usb = cfg.direct_usb;
         let hub = Hub::open(opts).map_err(|e| format!("Could not start the hub: {e}"))?;
-        let support = decoder_support(&xrmc_decode::capabilities());
+        platform.hub_started(HubHandle {
+            registry: hub.registry.clone(),
+            runtime: tokio::runtime::Handle::current(),
+        });
         let caps = xrmc_decode::capabilities();
+        let support = decoder_support(&caps);
         let env = EnvInfo {
             demo: false,
             version: env!("CARGO_PKG_VERSION").into(),
@@ -262,6 +268,7 @@ impl HubBackend {
                 .iter()
                 .map(|(k, d)| (k.clone(), (d.any, d.hw)))
                 .collect(),
+            decoder_details: caps.details.clone(),
             local_ips: local_ips(),
             store_path: Some(cfg.paths.store.display().to_string()),
             fatal: None,
@@ -462,6 +469,21 @@ impl Bridge {
     /// Start the hub (or the demo) on a background runtime. `wake` is called
     /// whenever the UI has something new to show.
     pub fn start(mode: Mode, wake: Wake, decoder_threads: u32) -> Bridge {
+        Bridge::start_with(
+            mode,
+            wake,
+            decoder_threads,
+            crate::platform::default_platform(),
+        )
+    }
+
+    /// [`Bridge::start`] with platform services (Android: USB devices from `UsbManager`).
+    pub fn start_with(
+        mode: Mode,
+        wake: Wake,
+        decoder_threads: u32,
+        platform: Arc<dyn Platform>,
+    ) -> Bridge {
         let (ui_tx, rx) = std_mpsc::channel();
         let (tx, ctl_rx) = mpsc::unbounded_channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -474,7 +496,8 @@ impl Bridge {
             Mode::Hub(cfg) => {
                 let _g = runtime.enter();
                 (
-                    HubBackend::open(cfg).map(|b| Arc::new(b) as Arc<dyn Backend>),
+                    HubBackend::open(cfg, platform.as_ref())
+                        .map(|b| Arc::new(b) as Arc<dyn Backend>),
                     crate::decode::system_decoders(decoder_threads),
                 )
             }

@@ -53,13 +53,24 @@ impl App {
                 let t = self.model.tile(id)?;
                 let inputs = self.model.inputs(t);
                 let resolved = model::tile_params(&inputs);
+                let mut stats_tip = model::stats_tooltip(inputs.state, &resolved.view);
+                if let Some(out) = self.bridge.output(id) {
+                    let backend = out.backend();
+                    if !backend.is_empty() && !stats_tip.is_empty() {
+                        let hw = out.hardware.load(std::sync::atomic::Ordering::Relaxed);
+                        stats_tip.push_str(&format!(
+                            "\nDecoder: {backend} ({})\nMenu → Video codecs: encoders vs. decoders",
+                            if hw { "hardware" } else { "software" }
+                        ));
+                    }
+                }
                 Some(TileView {
                     id: id.clone(),
                     headset: inputs.headset.cloned(),
                     state: inputs.state.cloned(),
                     status: model::tile_status(inputs.state, t),
                     stats: model::stats_line(inputs.state, t, &resolved.view),
-                    stats_tip: model::stats_tooltip(inputs.state, &resolved.view),
+                    stats_tip,
                     tile: t.clone(),
                     resolved,
                 })
@@ -755,6 +766,10 @@ impl App {
         }
         if item(ui, Icon::Sliders, "Calibrate lens correction") {
             self.cmds.push(Cmd::Calibrate(id.clone()));
+            ui.close();
+        }
+        if item(ui, Icon::Info, "Video codecs") {
+            self.cmds.push(Cmd::Open(Dialog::codecs(Some(id.clone()))));
             ui.close();
         }
         if item(ui, Icon::Camera, "Save a snapshot (PNG)") {

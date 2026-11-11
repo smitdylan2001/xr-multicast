@@ -149,6 +149,7 @@ fn the_whole_app_runs_headless_in_demo_mode() {
         decoder_threads: 1,
         offscreen: true,
         cast_on_start: false,
+        platform: xrmc_desktop::platform::default_platform(),
     };
     let mut app = App::create(&ctx, None, opts);
     let start = Instant::now();

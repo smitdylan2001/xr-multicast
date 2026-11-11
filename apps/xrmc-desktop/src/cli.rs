@@ -128,6 +128,7 @@ impl Cli {
             decoder_threads: self.decoder_threads,
             offscreen: self.offscreen.is_some(),
             cast_on_start: self.cast_on_start,
+            platform: crate::platform::default_platform(),
         })
     }
 

@@ -990,6 +990,8 @@ pub struct EnvInfo {
     pub adb_mode: String,
     pub decoder: String,
     pub decoder_support: BTreeMap<String, (bool, bool)>,
+    /// Per codec profile: the decoder this device uses and whether it is hardware.
+    pub decoder_details: Vec<xrmc_decode::CodecDetail>,
     pub local_ips: Vec<String>,
     pub store_path: Option<String>,
     /// The hub could not start (shown instead of the dashboard).
