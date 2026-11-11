@@ -1,0 +1,5 @@
+# Installed by XR MultiCast.
+# Gives the logged-in user (and the plugdev group) access to the ADB interface of
+# any USB device, so every XR headset brand works without per-model rules.
+# ADB is identified by its USB interface: class ff, subclass 42, protocol 01.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff4201:*", MODE="0660", GROUP="plugdev", TAG+="uaccess"

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
+    />
+    <title>XR MultiCast</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="btn icon nav-toggle" data-action="toggle-sidebar" title="Headsets" aria-label="Show headsets"><i data-icon="menu"></i></button>
+      <div class="brand">
+        <svg viewBox="0 0 32 32" class="logo" aria-hidden="true">
+          <rect x="2" y="9" width="28" height="15" rx="6" fill="none" stroke="currentColor" stroke-width="2.4" />
+          <circle cx="10.5" cy="16.5" r="3.2" fill="currentColor" />
+          <circle cx="21.5" cy="16.5" r="3.2" fill="currentColor" />
+        </svg>
+        <span>XR MultiCast</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn primary" data-action="cast-all" title="Start casting every connected, verified headset">
+          <i data-icon="play"></i>Cast all
+        </button>
+        <button class="btn" data-action="stop-all" title="Stop every stream"><i data-icon="stop"></i>Stop all</button>
+        <span class="divider"></span>
+        <button class="btn" data-action="scan" title="Search the local network for headsets"><i data-icon="radar"></i>Scan network</button>
+        <button class="btn" data-action="add-ip" title="Connect to a headset by IP address"><i data-icon="plus"></i>Add by IP</button>
+        <span class="divider"></span>
+        <label class="select-inline" title="Grid layout">
+          <i data-icon="grid"></i>
+          <select id="grid-columns">
+            <option value="auto">Auto grid</option>
+            <option value="1">1 column</option>
+            <option value="2">2 columns</option>
+            <option value="3">3 columns</option>
+            <option value="4">4 columns</option>
+          </select>
+        </label>
+        <button class="btn icon" data-action="guide" title="Connection guide"><i data-icon="help"></i></button>
+        <button class="btn icon" data-action="settings" title="Settings"><i data-icon="gear"></i></button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <div class="sidebar-backdrop" data-action="close-sidebar"></div>
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Headsets</h2>
+          <span id="hs-count" class="count"></span>
+        </div>
+        <div id="adb-error" class="banner error hidden"></div>
+        <div id="headset-list" class="headset-list"></div>
+        <div class="sidebar-foot">
+          <button class="btn block ghost" data-action="guide"><i data-icon="usb"></i>How to connect a headset</button>
+        </div>
+      </aside>
+
+      <main class="stage">
+        <div id="empty" class="empty">
+          <div class="empty-card">
+            <h1>Connect your first headset</h1>
+            <p>Headsets are added over <b>USB first</b> so you can verify exactly which devices are allowed to cast. After that they can cast over Wi-Fi.</p>
+            <ol class="steps">
+              <li><b>Enable developer mode / USB debugging</b> on the headset. <a href="#" data-action="guide">Brand-specific steps</a></li>
+              <li><b>Plug it in</b> with a USB-C data cable, put it on and accept <i>Allow USB debugging</i>.</li>
+              <li>Click <b>Verify</b> on the headset in the left panel. Tick <i>Enable Wi-Fi casting</i> to unplug afterwards.</li>
+              <li>Click <b>Cast</b> (or <b>Cast all</b>) to see the headset's view here, lens-corrected.</li>
+            </ol>
+            <p class="muted">Supported: Meta Quest · PICO · Play For Dream / YVR · HTC VIVE Focus / XR Elite · Android XR</p>
+          </div>
+        </div>
+        <div id="grid" class="grid"></div>
+      </main>
+
+      <aside id="calib" class="drawer hidden" aria-label="Lens calibration"></aside>
+    </div>
+
+    <footer class="statusbar">
+      <span id="status-adb"></span>
+      <span id="status-server"></span>
+      <span id="status-ip"></span>
+      <span id="status-sandbox" hidden></span>
+      <span id="status-remote" data-action="settings" hidden></span>
+      <span class="spacer"></span>
+      <span class="muted">Tip: double-click a stream to focus it, press 1–9 to jump to a headset, Esc to return.</span>
+    </footer>
+
+    <div id="modal-root"></div>
+    <div id="toasts" class="toasts"></div>
+
+    <script src="js/icons.js"></script>
+    <script src="js/decoder.js"></script>
+    <script src="js/mse-decoder.js"></script>
+    <script src="js/layout-detect.js"></script>
+    <script src="js/lens-renderer.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

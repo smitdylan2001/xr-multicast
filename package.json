@@ -1,0 +1,119 @@
+{
+  "name": "xr-multicast",
+  "productName": "XR MultiCast",
+  "version": "1.0.0",
+  "description": "Cast and monitor the screens of standalone VR headsets (Meta Quest, PICO, Play For Dream / YVR, HTC VIVE, Android XR) over USB or Wi-Fi, with lens-distortion correction.",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smitdylan2001/xr-multicast.git"
+  },
+  "bugs": "https://github.com/smitdylan2001/xr-multicast/issues",
+  "scripts": {
+    "setup": "node scripts/fetch-deps.js",
+    "start": "electron .",
+    "test": "node --test",
+    "dist:linux": "node scripts/fetch-deps.js --platform linux && electron-builder --linux",
+    "install:linux": "node scripts/fetch-deps.js --platform linux && electron-builder --linux dir && bash packaging/linux/install-user.sh",
+    "dist:win": "node scripts/fetch-deps.js --platform win32 && electron-builder --win",
+    "dist:mac": "node scripts/fetch-deps.js --platform darwin && electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "extract-zip": "^2.0.1"
+  },
+  "author": "Dylan Smit",
+  "homepage": "https://github.com/smitdylan2001/xr-multicast",
+  "desktopName": "xr-multicast.desktop",
+  "build": {
+    "appId": "io.github.smitdylan2001.xrmulticast",
+    "productName": "XR MultiCast",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/scrcpy-server",
+        "to": "scrcpy-server"
+      }
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "executableName": "xr-multicast",
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "maintainer": "Dylan Smit",
+      "synopsis": "Cast and monitor VR headset screens",
+      "description": "Casts the screens of standalone VR headsets (Meta Quest, PICO, Play For Dream / YVR, HTC VIVE, Android XR) over USB or Wi-Fi, with lens-distortion correction.",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "XR MultiCast",
+          "GenericName": "VR Headset Casting",
+          "Comment": "Cast and monitor VR headset screens over USB or Wi-Fi",
+          "Keywords": "VR;XR;Quest;Meta;Pico;Vive;headset;cast;mirror;scrcpy;",
+          "Categories": "Utility;"
+        }
+      },
+      "extraResources": [
+        {
+          "from": "vendor/platform-tools/linux/platform-tools",
+          "to": "platform-tools"
+        },
+        {
+          "from": "packaging/linux/70-xr-multicast-adb.rules",
+          "to": "linux/70-xr-multicast-adb.rules"
+        }
+      ]
+    },
+    "appImage": {
+      "artifactName": "XR-MultiCast-${version}-${arch}.AppImage"
+    },
+    "deb": {
+      "afterInstall": "packaging/linux/after-install.sh",
+      "afterRemove": "packaging/linux/after-remove.sh",
+      "recommends": [
+        "android-udev-rules"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/platform-tools/win32/platform-tools",
+          "to": "platform-tools"
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "extraResources": [
+        {
+          "from": "vendor/platform-tools/darwin/platform-tools",
+          "to": "platform-tools"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.22.2"
+  }
+}

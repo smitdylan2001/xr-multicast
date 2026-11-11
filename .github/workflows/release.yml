@@ -1,0 +1,43 @@
+name: Release
+
+# Push a tag like v1.0.0 to build installers for all platforms and attach them to a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            script: dist:linux
+          - os: windows-latest
+            script: dist:win
+          - os: macos-latest
+            script: dist:mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run ${{ matrix.script }} -- --publish never
+        env:
+          # Unsigned builds; add signing secrets here later if needed.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.exe
+            dist/*.dmg
