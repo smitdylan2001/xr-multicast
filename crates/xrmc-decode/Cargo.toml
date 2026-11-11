@@ -7,6 +7,23 @@ repository.workspace = true
 authors.workspace = true
 description = "Video decoding for XR MultiCast: H.264/H.265/AV1 bitstreams to YUV frames."
 
+[features]
+# Compile OpenH264 from source on every target (needs a C/C++ compiler for the
+# target). Linux always does this; enable it for native Windows/macOS/Android
+# release builds. Without it, those targets load a Cisco OpenH264 binary at runtime.
+openh264-source = ["openh264/source", "openh264-sys2/source"]
+
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+# FFmpeg (and optionally OpenH264 binaries) are loaded at runtime; nothing is linked.
+libloading = "0.8.9"
+openh264 = { version = "0.9.10", default-features = false, features = ["libloading"] }
+openh264-sys2 = { version = "0.9.10", default-features = false, features = ["libloading"] }
+
+# OpenH264 built from its C++ source, so Linux (x86_64 and aarch64 boards) always
+# has an H.264 decoder without system packages. Not enabled for other targets by
+# default so `cargo check --target ...` works without a cross C++ toolchain.
+[target.'cfg(target_os = "linux")'.dependencies]
+openh264 = { version = "0.9.10", default-features = false, features = ["source", "libloading"] }
+openh264-sys2 = { version = "0.9.10", default-features = false, features = ["source", "libloading"] }

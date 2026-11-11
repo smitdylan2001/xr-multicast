@@ -7,9 +7,19 @@
 //!   AV1, 8 and 10 bit, multithreaded. No build-time FFmpeg dependency.
 //! - **OpenH264, built in**: H.264 only, always available (fallback).
 //!
-//! STATUS: interface defined; implementation in progress (see the crate README).
+//! Hardware decoding is not implemented yet (`hw` is always `false`); see the
+//! TODO in `ffmpeg/mod.rs`.
+//!
+//! Environment overrides: `XRMC_FFMPEG_DIR` (folder with the FFmpeg libraries),
+//! `XRMC_FFMPEG_DISABLE=1`, `XRMC_FFMPEG_LOG=1` (FFmpeg warnings to stderr),
+//! `XRMC_OPENH264_LIB` (Cisco OpenH264 binary on targets without the built-in one).
 
 use std::fmt;
+use std::sync::OnceLock;
+
+mod ffmpeg;
+mod openh264;
+mod stream;
 
 /// Video codecs scrcpy can send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,7 +82,14 @@ pub struct Plane {
 
 impl fmt::Debug for Plane {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Plane({}x{}, stride {}, {} bytes)", self.width, self.height, self.stride, self.data.len())
+        write!(
+            f,
+            "Plane({}x{}, stride {}, {} bytes)",
+            self.width,
+            self.height,
+            self.stride,
+            self.data.len()
+        )
     }
 }
 
@@ -119,7 +136,10 @@ pub struct DecoderOptions {
 
 impl Default for DecoderOptions {
     fn default() -> Self {
-        DecoderOptions { prefer_hw: true, threads: 2 }
+        DecoderOptions {
+            prefer_hw: true,
+            threads: 2,
+        }
     }
 }
 
@@ -136,7 +156,13 @@ pub trait Decoder: Send {
     /// Feed one scrcpy packet. `config` packets (SPS/PPS/VPS, AV1 sequence header /
     /// av1C) are remembered and prepended to key frames as needed. Returns the
     /// frames that became available (usually 0 or 1; low-latency, no reordering delay).
-    fn push(&mut self, data: &[u8], pts: u64, key: bool, config: bool) -> Result<Vec<Frame>, DecodeError>;
+    fn push(
+        &mut self,
+        data: &[u8],
+        pts: u64,
+        key: bool,
+        config: bool,
+    ) -> Result<Vec<Frame>, DecodeError>;
 
     /// Backend name for diagnostics, e.g. `ffmpeg:h264` or `openh264`.
     fn backend(&self) -> &str;
@@ -145,16 +171,105 @@ pub trait Decoder: Send {
     fn is_hardware(&self) -> bool {
         false
     }
+
+    /// Whether delta frames are being dropped until the next key frame (start of
+    /// stream, after a config change, or after a decoder error). The caller may ask
+    /// the device for a key frame.
+    fn waiting_for_key_frame(&self) -> bool {
+        false
+    }
 }
 
-/// What this machine can decode.
+/// Which decoder implementation [`create_with`] should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// FFmpeg if it is available and supports the codec, else OpenH264 (H.264).
+    #[default]
+    Auto,
+    /// FFmpeg only (runtime-loaded `libavcodec`).
+    Ffmpeg,
+    /// OpenH264 only (H.264).
+    OpenH264,
+}
+
+/// Description of the FFmpeg found at runtime (e.g.
+/// `FFmpeg 8.0.1 (libavcodec 62.28.102, libavutil 60.26.102)`), or `None`.
+pub fn ffmpeg_version() -> Option<String> {
+    ffmpeg::lib().map(ffmpeg::Lib::describe)
+}
+
+/// OpenH264 version (e.g. `2.6.0`) if the OpenH264 backend is usable.
+pub fn openh264_version() -> Option<&'static str> {
+    openh264::version()
+}
+
+/// What this machine can decode (probed once by opening each decoder, then cached).
 pub fn capabilities() -> Capabilities {
-    Capabilities { backend: "none (not implemented yet)".into(), ..Default::default() }
+    static CAPS: OnceLock<Capabilities> = OnceLock::new();
+    CAPS.get_or_init(probe_capabilities).clone()
 }
 
-/// Create a decoder for `codec`.
-pub fn create(codec: Codec, _options: DecoderOptions) -> Result<Box<dyn Decoder>, DecodeError> {
-    Err(DecodeError::Unsupported(codec))
+fn probe_capabilities() -> Capabilities {
+    let ff = ffmpeg::lib();
+    let probe = |codec| ff.and_then(|lib| lib.probe(codec));
+    let (h264, hevc, av1) = (probe(Codec::H264), probe(Codec::H265), probe(Codec::Av1));
+    let oh = openh264::version();
+    let any = |b: bool| DecodeCaps { any: b, hw: false };
+
+    let mut parts = Vec::new();
+    if let Some(lib) = ff {
+        let names: Vec<&str> = [h264, hevc, av1].into_iter().flatten().collect();
+        parts.push(format!("{} [{}]", lib.describe(), names.join(", ")));
+    }
+    if let Some(v) = oh {
+        parts.push(format!("OpenH264 {v}"));
+    }
+    Capabilities {
+        h264: any(h264.is_some() || oh.is_some()),
+        h265: any(hevc.is_some()),
+        av1: any(av1.is_some()),
+        // FFmpeg's hevc decoder and libdav1d/libaom handle 10-bit streams.
+        h265_10: any(hevc.is_some()),
+        av1_10: any(av1.is_some()),
+        backend: if parts.is_empty() {
+            "none".into()
+        } else {
+            parts.join(" + ")
+        },
+    }
+}
+
+/// Create a decoder for `codec`: FFmpeg if available, else OpenH264 for H.264.
+pub fn create(codec: Codec, options: DecoderOptions) -> Result<Box<dyn Decoder>, DecodeError> {
+    create_with(codec, options, Backend::Auto)
+}
+
+/// Create a decoder using a specific backend.
+pub fn create_with(
+    codec: Codec,
+    options: DecoderOptions,
+    backend: Backend,
+) -> Result<Box<dyn Decoder>, DecodeError> {
+    let mut ff_err = None;
+    if matches!(backend, Backend::Auto | Backend::Ffmpeg) {
+        match ffmpeg::lib() {
+            Some(lib) => match ffmpeg::FfmpegDecoder::open(lib, codec, options) {
+                Ok(dec) => return Ok(Box::new(dec)),
+                Err(e) => {
+                    tracing::debug!("FFmpeg {}: {e}", codec.as_str());
+                    ff_err = Some(e);
+                }
+            },
+            None => ff_err = Some(DecodeError::Unsupported(codec)),
+        }
+    }
+    if matches!(backend, Backend::Auto | Backend::OpenH264) && codec == Codec::H264 {
+        return Ok(Box::new(openh264::OpenH264Decoder::open()?));
+    }
+    Err(match (backend, ff_err) {
+        (Backend::Ffmpeg, Some(e)) => e,
+        _ => DecodeError::Unsupported(codec),
+    })
 }
 
 /// A synthetic I420 test pattern (useful for UI and renderer development).
@@ -164,7 +279,11 @@ pub fn test_pattern(width: u32, height: u32, t: u32) -> Frame {
     for row in 0..h {
         for col in 0..w {
             let grid = (col + t as usize) % 64 < 3 || row % 64 < 3;
-            y[row * w + col] = if grid { 235 } else { (16 + (col * 200 / w.max(1))) as u8 };
+            y[row * w + col] = if grid {
+                235
+            } else {
+                (16 + (col * 200 / w.max(1))) as u8
+            };
         }
     }
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
@@ -174,11 +293,29 @@ pub fn test_pattern(width: u32, height: u32, t: u32) -> Frame {
         width,
         height,
         format: PixelFormat::I420,
-        color: ColorInfo { bt709: true, full_range: false },
+        color: ColorInfo {
+            bt709: true,
+            full_range: false,
+        },
         planes: vec![
-            Plane { data: y, stride: w, width, height },
-            Plane { data: u, stride: cw, width: cw as u32, height: ch as u32 },
-            Plane { data: v, stride: cw, width: cw as u32, height: ch as u32 },
+            Plane {
+                data: y,
+                stride: w,
+                width,
+                height,
+            },
+            Plane {
+                data: u,
+                stride: cw,
+                width: cw as u32,
+                height: ch as u32,
+            },
+            Plane {
+                data: v,
+                stride: cw,
+                width: cw as u32,
+                height: ch as u32,
+            },
         ],
         pts: t as u64,
     }
