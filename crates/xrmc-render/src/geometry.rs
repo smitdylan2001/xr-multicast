@@ -88,16 +88,27 @@ pub(crate) struct FrameInfo {
     pub height: u32,
     pub color: ColorInfo,
     pub format: PixelFormat,
-    /// 10-bit samples live in R16Unorm textures (else they were converted to 8 bit).
+    /// 10-bit samples live in R16Unorm / RG16Unorm textures (else they were converted to 8 bit).
     pub r16: bool,
 }
 
 impl FrameInfo {
     fn bits(&self) -> u32 {
-        if self.format == PixelFormat::I420P10 && self.r16 {
+        if matches!(self.format, PixelFormat::I420P10 | PixelFormat::P010) && self.r16 {
             10
         } else {
             8
+        }
+    }
+
+    /// Factor from the sampled texture value to the 0..1 code value.
+    fn sample_scale(&self) -> f32 {
+        match (self.format, self.r16) {
+            // 0..1023 in a 16-bit texel.
+            (PixelFormat::I420P10, true) => 65535.0 / 1023.0,
+            // code << 6 in a 16-bit texel: (code·64)/65535 → code/1023.
+            (PixelFormat::P010, true) => 65535.0 / (1023.0 * 64.0),
+            _ => 1.0,
         }
     }
 }
@@ -211,16 +222,20 @@ pub(crate) fn tile_uniform(
             f32::from(u8::from(p.grid)),
             f32::from(u8::from(p.blur)),
         ],
-        mode: [0, rot, 0, u32::from(frame.format == PixelFormat::Nv12)],
+        mode: [
+            0,
+            rot,
+            0,
+            u32::from(matches!(
+                frame.format,
+                PixelFormat::Nv12 | PixelFormat::P010
+            )),
+        ],
         yuv_r,
         yuv_g,
         yuv_b,
         tex: [
-            if frame.bits() == 10 {
-                65535.0 / 1023.0
-            } else {
-                1.0
-            },
+            frame.sample_scale(),
             frame.width as f32 / (2.0 * cw),
             frame.height as f32 / (2.0 * ch),
             f32::from(u8::from(linearise)),

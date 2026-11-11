@@ -7,12 +7,15 @@
 //!   AV1, 8 and 10 bit, multithreaded. No build-time FFmpeg dependency.
 //! - **OpenH264, built in**: H.264 only, always available (fallback).
 //!
-//! Hardware decoding is not implemented yet (`hw` is always `false`); see the
-//! TODO in `ffmpeg/mod.rs`.
+//! Hardware decoding goes through FFmpeg's hwaccels (VA-API, V4L2, VideoToolbox,
+//! D3D11VA/DXVA2; see `ffmpeg/hw.rs`), probed once with tiny embedded key
+//! frames, with a per-stream fallback to software.
 //!
 //! Environment overrides: `XRMC_FFMPEG_DIR` (folder with the FFmpeg libraries),
 //! `XRMC_FFMPEG_DISABLE=1`, `XRMC_FFMPEG_LOG=1` (FFmpeg warnings to stderr),
-//! `XRMC_OPENH264_LIB` (Cisco OpenH264 binary on targets without the built-in one).
+//! `XRMC_OPENH264_LIB` (Cisco OpenH264 binary on targets without the built-in one),
+//! `XRMC_HWDEC=0` (no hardware decoding) or `XRMC_HWDEC=vaapi|v4l2|videotoolbox|…`
+//! (only that device type), `XRMC_HWDEC_DEVICE` (device path / adapter).
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -64,6 +67,10 @@ pub enum PixelFormat {
     Nv12,
     /// 10-bit planar 4:2:0, each sample a little-endian `u16` (values 0..1023). Three planes.
     I420P10,
+    /// 10-bit Y plane + interleaved UV plane (4:2:0), each sample a little-endian
+    /// `u16` with the value in the high 10 bits (`code << 6`). Two planes; what
+    /// hardware decoders download for 10-bit streams.
+    P010,
 }
 
 /// YUV → RGB conversion parameters.
@@ -106,7 +113,7 @@ pub struct Frame {
     pub height: u32,
     pub format: PixelFormat,
     pub color: ColorInfo,
-    /// Y, U, V (I420 / I420P10) or Y, UV (NV12).
+    /// Y, U, V (I420 / I420P10) or Y, UV (NV12 / P010).
     pub planes: Vec<Plane>,
     /// Presentation timestamp in microseconds (from the packet).
     pub pts: u64,
@@ -243,42 +250,56 @@ fn probe_capabilities() -> Capabilities {
     let probe = |codec| ff.and_then(|lib| lib.probe(codec));
     let (h264, hevc, av1) = (probe(Codec::H264), probe(Codec::H265), probe(Codec::Av1));
     let oh = openh264::version();
-    let any = |b: bool| DecodeCaps { any: b, hw: false };
+    let hw = ff.map(ffmpeg::hw::support);
+    let hw_path = |key: &str| hw.and_then(|s| s.path(key));
 
     let mut parts = Vec::new();
     if let Some(lib) = ff {
         let names: Vec<&str> = [h264, hevc, av1].into_iter().flatten().collect();
-        parts.push(format!("{} [{}]", lib.describe(), names.join(", ")));
+        let mut s = format!("{} [{}]", lib.describe(), names.join(", "));
+        if let Some(sum) = hw.and_then(|s| s.summary()) {
+            s += &format!(" · hardware: {sum}");
+        }
+        parts.push(s);
     }
     if let Some(v) = oh {
         parts.push(format!("OpenH264 {v}"));
     }
-    let detail = |key: &str, name: Option<&str>| CodecDetail {
-        key: key.into(),
-        caps: any(name.is_some()),
-        decoder: name.unwrap_or_default().into(),
-        hw_api: None,
+    // FFmpeg's hevc decoder and libdav1d/libaom also handle 10-bit streams.
+    let sw = |key: &str| match key {
+        "h264" => h264.or(oh.map(|_| "OpenH264")),
+        "h265" | "h265_10" => hevc,
+        _ => av1,
     };
-    let h264_name = h264.or(oh.map(|_| "OpenH264"));
+    let caps = |key: &str| DecodeCaps {
+        any: sw(key).is_some() || hw_path(key).is_some(),
+        hw: hw_path(key).is_some(),
+    };
+    let detail = |key: &str| CodecDetail {
+        key: key.into(),
+        caps: caps(key),
+        decoder: hw_path(key)
+            .map(|p| p.decoder)
+            .or(sw(key))
+            .unwrap_or_default()
+            .into(),
+        hw_api: hw_path(key).map(|p| p.label.clone()),
+    };
     Capabilities {
-        h264: any(h264.is_some() || oh.is_some()),
-        h265: any(hevc.is_some()),
-        av1: any(av1.is_some()),
-        // FFmpeg's hevc decoder and libdav1d/libaom handle 10-bit streams.
-        h265_10: any(hevc.is_some()),
-        av1_10: any(av1.is_some()),
+        h264: caps("h264"),
+        h265: caps("h265"),
+        av1: caps("av1"),
+        h265_10: caps("h265_10"),
+        av1_10: caps("av1_10"),
         backend: if parts.is_empty() {
             "none".into()
         } else {
             parts.join(" + ")
         },
-        details: vec![
-            detail("h264", h264_name),
-            detail("h265", hevc),
-            detail("av1", av1),
-            detail("h265_10", hevc),
-            detail("av1_10", av1),
-        ],
+        details: ["h264", "h265", "av1", "h265_10", "av1_10"]
+            .into_iter()
+            .map(detail)
+            .collect(),
     }
 }
 

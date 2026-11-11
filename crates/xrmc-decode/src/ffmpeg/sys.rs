@@ -14,8 +14,15 @@
 //!   `palette_has_changed` removed). FFmpeg only appends fields within a major, so
 //!   the prefix is stable for every minor of a major.
 //!
-//! `AVCodecContext` fields are never touched directly (their offsets change between
-//! majors); settings go through AVOptions instead.
+//! `AVCodecContext` is opaque: settings go through AVOptions. The only exceptions
+//! are the three fields hardware decoding needs and AVOptions can't set
+//! (`opaque`, `get_format`, `hw_device_ctx`), written at per-major offsets, and
+//! `profile` / `sw_pix_fmt`, read in the `get_format` callback
+//! ([`CodecCtxOffsets`]) checked with `offsetof()` against the headers of every
+//! supported release, on x86_64 Linux, aarch64 Linux, aarch64 macOS and x86_64
+//! Windows (`scripts/check-ffmpeg-layouts.sh`). Hardware decoding is refused on
+//! other majors and on 32-bit targets. `AVCodecHWConfig` (three `int`-sized
+//! fields) and `AVBufferRef.data` are identical in every supported release.
 
 #![allow(non_camel_case_types, dead_code)]
 
@@ -25,6 +32,78 @@ pub type AVCodec = c_void;
 pub type AVCodecContext = c_void;
 pub type AVFrame = c_void;
 pub type AVDictionary = c_void;
+pub type AVBufferRef = c_void;
+
+/// `AVCodecHWConfig` (identical in libavcodec 59–62). Returned by `avcodec_get_hw_config`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AVCodecHWConfig {
+    pub pix_fmt: c_int,
+    pub methods: c_int,
+    pub device_type: c_int,
+}
+
+pub const AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX: c_int = 1;
+pub const AV_HWDEVICE_TYPE_NONE: c_int = 0;
+pub const AV_PIX_FMT_NONE: c_int = -1;
+pub const AV_PROFILE_HEVC_MAIN: c_int = 1;
+pub const AV_PROFILE_HEVC_MAIN_STILL_PICTURE: c_int = 3;
+
+/// `enum AVPixelFormat (*get_format)(AVCodecContext *, const enum AVPixelFormat *)`.
+pub type GetFormatFn = unsafe extern "C" fn(*mut AVCodecContext, *const c_int) -> c_int;
+
+/// Byte offsets of the `AVCodecContext` fields written for hardware decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodecCtxOffsets {
+    pub opaque: usize,
+    pub get_format: usize,
+    pub hw_device_ctx: usize,
+    /// `int profile` (read).
+    pub profile: usize,
+    /// `enum AVPixelFormat sw_pix_fmt` (read).
+    pub sw_pix_fmt: usize,
+}
+
+impl CodecCtxOffsets {
+    /// Offsets for a libavcodec major, or `None` if they weren't verified (unknown
+    /// major, or a 32-bit target).
+    pub fn for_avcodec_major(major: u32) -> Option<CodecCtxOffsets> {
+        if cfg!(not(target_pointer_width = "64")) {
+            return None;
+        }
+        let (opaque, get_format, hw_device_ctx, profile, sw_pix_fmt) = match major {
+            59 => (48, 152, 872, 676, 720),
+            60 => (48, 152, 864, 668, 712),
+            61 => (48, 192, 560, 688, 144),
+            62 => (48, 192, 560, 688, 140),
+            _ => return None,
+        };
+        Some(CodecCtxOffsets {
+            opaque,
+            get_format,
+            hw_device_ctx,
+            profile,
+            sw_pix_fmt,
+        })
+    }
+
+    /// Write a pointer-sized field.
+    ///
+    /// # Safety
+    /// `ctx` must be an `AVCodecContext` from the libavcodec major these offsets are for,
+    /// and `offset` one of its fields of type `T`.
+    pub unsafe fn write<T>(ctx: *mut AVCodecContext, offset: usize, value: T) {
+        unsafe { std::ptr::write((ctx as *mut u8).add(offset) as *mut T, value) }
+    }
+
+    /// Read a pointer-sized field (see [`CodecCtxOffsets::write`]).
+    ///
+    /// # Safety
+    /// As for [`CodecCtxOffsets::write`].
+    pub unsafe fn read<T: Copy>(ctx: *const AVCodecContext, offset: usize) -> T {
+        unsafe { std::ptr::read((ctx as *const u8).add(offset) as *const T) }
+    }
+}
 
 /// Leading fields of `AVPacket` (identical in libavcodec 59, 60, 61 and 62).
 /// Always allocated by `av_packet_alloc`; never construct or size this type.
@@ -258,6 +337,20 @@ pub type FnOptSetInt = unsafe extern "C" fn(*mut c_void, *const c_char, i64, c_i
 pub type FnGetPixFmt = unsafe extern "C" fn(*const c_char) -> c_int;
 pub type FnStrError = unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int;
 pub type FnLogSetLevel = unsafe extern "C" fn(c_int);
+pub type FnGetHwConfig = unsafe extern "C" fn(*const AVCodec, c_int) -> *const AVCodecHWConfig;
+pub type FnHwDeviceCtxCreate = unsafe extern "C" fn(
+    *mut *mut AVBufferRef,
+    c_int,
+    *const c_char,
+    *mut AVDictionary,
+    c_int,
+) -> c_int;
+pub type FnHwDeviceFindTypeByName = unsafe extern "C" fn(*const c_char) -> c_int;
+pub type FnHwDeviceGetTypeName = unsafe extern "C" fn(c_int) -> *const c_char;
+pub type FnBufferRef = unsafe extern "C" fn(*const AVBufferRef) -> *mut AVBufferRef;
+pub type FnBufferUnref = unsafe extern "C" fn(*mut *mut AVBufferRef);
+pub type FnHwFrameTransferData = unsafe extern "C" fn(*mut AVFrame, *const AVFrame, c_int) -> c_int;
+pub type FnGetPixFmtName = unsafe extern "C" fn(c_int) -> *const c_char;
 
 #[cfg(test)]
 mod tests {
@@ -300,6 +393,36 @@ mod tests {
             offsets!(AVFrameV60),
             (64, 104, 108, 116, 136, 276, 280, 292)
         );
+    }
+
+    /// `AVCodecContext` offsets from `scripts/check-ffmpeg-layouts.sh` (identical on
+    /// x86_64/aarch64 Linux, aarch64 macOS and x86_64 Windows).
+    #[test]
+    fn codec_context_offsets_match_ffmpeg_headers() {
+        let o = |m| {
+            CodecCtxOffsets::for_avcodec_major(m).map(|o| {
+                (
+                    o.opaque,
+                    o.get_format,
+                    o.hw_device_ctx,
+                    o.profile,
+                    o.sw_pix_fmt,
+                )
+            })
+        };
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(o(59), Some((48, 152, 872, 676, 720))); // FFmpeg 5.1
+            assert_eq!(o(60), Some((48, 152, 864, 668, 712))); // 6.0, 6.1
+            assert_eq!(o(61), Some((48, 192, 560, 688, 144))); // 7.0, 7.1
+            assert_eq!(o(62), Some((48, 192, 560, 688, 140))); // 8.0, 8.1
+        } else {
+            assert_eq!(o(62), None);
+        }
+        assert_eq!(o(58), None);
+        assert_eq!(o(63), None);
+        assert_eq!(std::mem::size_of::<AVCodecHWConfig>(), 12);
+        assert_eq!(offset_of!(AVCodecHWConfig, methods), 4);
+        assert_eq!(offset_of!(AVCodecHWConfig, device_type), 8);
     }
 
     #[test]

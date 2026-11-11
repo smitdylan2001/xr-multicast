@@ -117,7 +117,13 @@ pub fn luma_grid(frame: &Frame, size: usize) -> Option<Vec<f32>> {
     if w == 0 || h == 0 || size == 0 {
         return None;
     }
-    let ten = frame.format == PixelFormat::I420P10;
+    let ten = matches!(frame.format, PixelFormat::I420P10 | PixelFormat::P010);
+    // P010 keeps the 10-bit code in the high bits.
+    let div = if frame.format == PixelFormat::P010 {
+        256.0
+    } else {
+        4.0
+    };
     let bpp = if ten { 2 } else { 1 };
     if y.data.len() < (h - 1) * y.stride + w * bpp {
         return None;
@@ -125,7 +131,7 @@ pub fn luma_grid(frame: &Frame, size: usize) -> Option<Vec<f32>> {
     let sample = |x: usize, row: usize| -> f32 {
         let i = row * y.stride + x * bpp;
         let v = if ten {
-            u16::from_le_bytes([y.data[i], y.data[i + 1]]) as f32 / 4.0
+            u16::from_le_bytes([y.data[i], y.data[i + 1]]) as f32 / div
         } else {
             y.data[i] as f32
         };
@@ -201,7 +207,7 @@ impl Detector {
 }
 
 fn bit_depth(f: &Frame) -> u8 {
-    if f.format == PixelFormat::I420P10 {
+    if matches!(f.format, PixelFormat::I420P10 | PixelFormat::P010) {
         10
     } else {
         8

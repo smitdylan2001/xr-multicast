@@ -1,4 +1,5 @@
-//! End-to-end decoding of recorded bitstreams through both backends.
+//! End-to-end decoding of recorded bitstreams through both backends (FFmpeg in
+//! software; hardware decoding is tested in `hw.rs`).
 //! FFmpeg tests are skipped (with a message) when no supported libavcodec is found.
 
 mod common;
@@ -11,8 +12,13 @@ use xrmc_decode::{
 
 const FRAME_US: u64 = 33_333;
 
+const SOFTWARE: DecoderOptions = DecoderOptions {
+    prefer_hw: false,
+    threads: 2,
+};
+
 fn ffmpeg(codec: Codec) -> Option<Box<dyn Decoder>> {
-    match create_with(codec, DecoderOptions::default(), Backend::Ffmpeg) {
+    match create_with(codec, SOFTWARE, Backend::Ffmpeg) {
         Ok(d) => Some(d),
         Err(e) => {
             eprintln!(
@@ -462,7 +468,10 @@ fn capabilities_report_what_decodes() {
     eprintln!("{caps:#?}");
     assert!(caps.h264.any, "OpenH264 is always available on Linux");
     assert!(caps.backend.contains("OpenH264"));
-    assert!(!caps.h264.hw && !caps.h265.hw && !caps.av1.hw);
+    for d in &caps.details {
+        assert_eq!(d.caps.hw, d.hw_api.is_some(), "{d:?}");
+        assert_eq!(d.caps.any, !d.decoder.is_empty(), "{d:?}");
+    }
     if xrmc_decode::ffmpeg_version().is_some() {
         assert!(caps.backend.contains("FFmpeg"));
         assert_eq!(caps.h265.any, ffmpeg(Codec::H265).is_some());
@@ -475,7 +484,7 @@ fn capabilities_report_what_decodes() {
 
 #[test]
 fn create_prefers_ffmpeg_then_openh264() {
-    let dec = create(Codec::H264, DecoderOptions::default()).unwrap();
+    let dec = create(Codec::H264, SOFTWARE).unwrap();
     if xrmc_decode::ffmpeg_version().is_some() {
         assert_eq!(dec.backend(), "ffmpeg:h264");
     } else {
@@ -483,6 +492,21 @@ fn create_prefers_ffmpeg_then_openh264() {
     }
     assert!(!dec.is_hardware());
     assert!(dec.waiting_for_key_frame());
+    // With hardware preferred: FFmpeg's h264, with or without a hwaccel.
+    let dec = create(Codec::H264, DecoderOptions::default()).unwrap();
+    assert_eq!(
+        dec.is_hardware(),
+        capabilities().h264.hw,
+        "{}",
+        dec.backend()
+    );
+    if xrmc_decode::ffmpeg_version().is_some() {
+        assert!(
+            dec.backend().starts_with("ffmpeg:h264"),
+            "{}",
+            dec.backend()
+        );
+    }
     match create_with(Codec::H265, DecoderOptions::default(), Backend::OpenH264) {
         Err(xrmc_decode::DecodeError::Unsupported(Codec::H265)) => {}
         other => panic!(

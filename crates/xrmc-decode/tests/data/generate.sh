@@ -27,3 +27,7 @@ gst-launch-1.0 -q $SRC ! "video/x-raw,$CAPS,format=NV12" ! vaav1enc key-int-max=
   ! av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! filesink location=av1_8.obu
 gst-launch-1.0 -q $SRC ! "video/x-raw,$CAPS,format=P010_10LE" ! vaav1enc key-int-max=8 \
   ! av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! filesink location=av1_10.obu
+# H.264 High 10: most hardware decoders can't do it (tests the hardware -> software fallback).
+gst-launch-1.0 -q videotestsrc pattern=smpte num-buffers=4 ! "video/x-raw,$CAPS,format=I420_10LE" \
+  ! x264enc tune=zerolatency key-int-max=2 bframes=0 bitrate=300 \
+  ! video/x-h264,stream-format=byte-stream,alignment=au ! filesink location=h264_high10.h264

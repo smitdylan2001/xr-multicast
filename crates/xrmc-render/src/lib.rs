@@ -12,8 +12,9 @@
 //! ```
 //!
 //! Each stream owns one texture per YUV plane (R8 for I420, R8 + RG8 for NV12,
-//! R16Unorm for 10-bit when the device has [`OPTIONAL_FEATURES`], otherwise the
-//! 10-bit samples are converted to 8 bit on upload). Textures and bind groups are
+//! R16Unorm for I420P10 and R16Unorm + RG16Unorm for P010 when the device has
+//! [`OPTIONAL_FEATURES`], otherwise the 10-bit samples are converted to 8 bit on
+//! upload: I420P10 → I420, P010 → NV12). Textures and bind groups are
 //! only recreated when a stream's size or format changes. All tile draws of a
 //! frame share one uniform buffer (dynamic offsets) that is written once per frame.
 //!
@@ -114,8 +115,8 @@ pub struct TileParams {
 }
 
 /// Device features worth requesting when the adapter has them (all optional):
-/// `TEXTURE_FORMAT_16BIT_NORM` keeps 10-bit frames at full precision on the GPU
-/// (otherwise they are converted to 8 bit on upload).
+/// `TEXTURE_FORMAT_16BIT_NORM` keeps 10-bit frames (I420P10, P010) at full
+/// precision on the GPU (otherwise they are converted to 8 bit on upload).
 pub const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
 
 /// Makes egui create its device with [`OPTIONAL_FEATURES`] where the adapter has them
@@ -209,7 +210,7 @@ struct Shared {
     pipeline_layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
     uniform_stride: u64,
-    /// 10-bit frames may use R16Unorm textures (feature enabled and filterable).
+    /// 10-bit frames may use R16Unorm / RG16Unorm textures (feature enabled and filterable).
     r16: AtomicBool,
     streams: Mutex<HashMap<String, Arc<Mutex<Stream>>>>,
     offscreen: Mutex<Option<wgpu::RenderPipeline>>,
@@ -223,19 +224,26 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn r16_supported(device: &wgpu::Device, adapter: Option<&wgpu::Adapter>) -> bool {
-    let fmt = wgpu::TextureFormat::R16Unorm;
+    let filterable = |fmt: wgpu::TextureFormat| {
+        fmt.guaranteed_format_features(device.features())
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+            && adapter.is_none_or(|a| {
+                a.get_texture_format_features(fmt)
+                    .flags
+                    .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+            })
+    };
     device
         .features()
         .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
-        && fmt
-            .guaranteed_format_features(device.features())
-            .flags
-            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-        && adapter.is_none_or(|a| {
-            a.get_texture_format_features(fmt)
-                .flags
-                .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-        })
+        && filterable(wgpu::TextureFormat::R16Unorm)
+        && filterable(wgpu::TextureFormat::Rg16Unorm)
+}
+
+/// Whether a format has 10-bit samples (stored as `u16`).
+fn is_ten_bit(format: PixelFormat) -> bool {
+    matches!(format, PixelFormat::I420P10 | PixelFormat::P010)
 }
 
 impl Shared {
@@ -379,10 +387,15 @@ impl Shared {
         } else {
             wgpu::TextureFormat::R8Unorm
         };
+        let pair = if key.r16 {
+            wgpu::TextureFormat::Rg16Unorm
+        } else {
+            wgpu::TextureFormat::Rg8Unorm
+        };
         let textures = match key.format {
-            PixelFormat::Nv12 => vec![
+            PixelFormat::Nv12 | PixelFormat::P010 => vec![
                 tex("xrmc y", key.width, key.height, plane),
-                tex("xrmc uv", cw, ch, wgpu::TextureFormat::Rg8Unorm),
+                tex("xrmc uv", cw, ch, pair),
             ],
             PixelFormat::I420 | PixelFormat::I420P10 => vec![
                 tex("xrmc y", key.width, key.height, plane),
@@ -608,6 +621,7 @@ fn validate(frame: &Frame) -> Result<(), UploadError> {
         PixelFormat::I420 => &[(w, h), (cw, ch), (cw, ch)],
         PixelFormat::Nv12 => &[(w, h), (cw * 2, ch)],
         PixelFormat::I420P10 => &[(w * 2, h), (cw * 2, ch), (cw * 2, ch)],
+        PixelFormat::P010 => &[(w * 2, h), (cw * 4, ch)],
     };
     if frame.planes.len() < planes.len() {
         return Err(UploadError::BadFrame(format!(
@@ -640,18 +654,25 @@ fn validate(frame: &Frame) -> Result<(), UploadError> {
     Ok(())
 }
 
-/// 10-bit little-endian samples → 8 bit (tightly packed into `out`).
-fn convert_10_to_8(data: &[u8], stride: usize, width: usize, height: usize, out: &mut Vec<u8>) {
+/// 10-bit little-endian samples → 8 bit (tightly packed into `out`). `width` is in
+/// samples; `msb` for P010 (value in the high 10 bits) instead of 0..1023.
+fn convert_10_to_8(
+    data: &[u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    msb: bool,
+    out: &mut Vec<u8>,
+) {
+    let shift = if msb { 6 } else { 0 };
     out.clear();
     out.reserve(width * height);
     for y in 0..height {
         let row = &data[y * stride..y * stride + width * 2];
-        out.extend(
-            row.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&s| ((u16::from_le_bytes(s) as u32 + 2) >> 2).min(255) as u8),
-        );
+        out.extend(row.as_chunks::<2>().0.iter().map(|&s| {
+            let code = u32::from(u16::from_le_bytes(s)) >> shift;
+            ((code + 2) >> 2).min(255) as u8
+        }));
     }
 }
 
@@ -742,7 +763,7 @@ impl VideoRenderer {
             }
         };
         let mut s = lock(&entry);
-        let r16 = frame.format == PixelFormat::I420P10 && sh.r16.load(Ordering::Relaxed);
+        let r16 = is_ten_bit(frame.format) && sh.r16.load(Ordering::Relaxed);
         let key = TexKey {
             width: frame.width,
             height: frame.height,
@@ -772,10 +793,14 @@ impl VideoRenderer {
         for (i, tex) in gpu.textures.iter().enumerate() {
             let p = &frame.planes[i];
             let (pw, ph) = if i == 0 { (w, h) } else { (cw, ch) };
-            if frame.format == PixelFormat::I420P10 && !r16 {
+            if is_ten_bit(frame.format) && !r16 {
+                // Samples per row: the P010 UV plane interleaves two per texel.
+                let pairs = frame.format == PixelFormat::P010 && i == 1;
+                let samples = pw as usize * if pairs { 2 } else { 1 };
+                let msb = frame.format == PixelFormat::P010;
                 let mut scratch = std::mem::take(&mut s.scratch);
-                convert_10_to_8(&p.data, p.stride, pw as usize, ph as usize, &mut scratch);
-                sh.write_plane(tex, &scratch, pw as usize, pw, ph);
+                convert_10_to_8(&p.data, p.stride, samples, ph as usize, msb, &mut scratch);
+                sh.write_plane(tex, &scratch, samples, pw, ph);
                 bytes += scratch.len() as u64;
                 s.scratch = scratch;
             } else {
@@ -894,7 +919,7 @@ impl VideoRenderer {
         }
     }
 
-    /// Whether 10-bit frames are kept at 16-bit precision on the GPU
+    /// Whether 10-bit frames (I420P10, P010) are kept at 16-bit precision on the GPU
     /// (else converted to 8 bit on upload; see [`OPTIONAL_FEATURES`]).
     pub fn has_16bit_textures(&self) -> bool {
         self.shared.r16.load(Ordering::Relaxed)

@@ -26,7 +26,7 @@ These come next, after the core is proven:
 
 | Crate / app | Responsibility |
 |---|---|
-| `xrmc-decode` | Hardware decoders: Android `AMediaCodec` → `AHardwareBuffer`, Linux VA-API, Windows Media Foundation/D3D11, macOS VideoToolbox. Software fallback. |
+| `xrmc-decode` | Hardware decoders: Android `AMediaCodec` → `AHardwareBuffer`; FFmpeg hwaccels for Linux (VA-API, V4L2), Windows (D3D11VA/DXVA2) and macOS (VideoToolbox). Software fallback. |
 | `xrmc-render` | wgpu compositor (Vulkan / Metal / DX12): all tiles in one pass, the lens-correction shader ported to WGSL, zero-copy import of decoded frames. |
 | `xrmc-remote` | WebSocket remote API, wire-compatible with the Electron hub, so the existing tablet web dashboard and hardware tools keep working. |
 | `apps/desktop`, `apps/android`, `apps/hubd` | Thin UI/platform shells. The cross-platform UI technology choice is documented in [ui-choice.md](ui-choice.md). |
@@ -89,6 +89,9 @@ cargo run -p xrmc-cli -- hub --seconds 20 --cast <hardware-serial>
    - Hardware decoding to `AHardwareBuffer`, imported into the wgpu/Vulkan compositor.
    - Verify, add and discover devices, and cast up to 10+ headsets.
 2. **`xrmc-render`:** port the lens-correction shader and compositor to WGSL/wgpu.
-3. **`xrmc-decode` per platform:** Android first, then VA-API, Media Foundation and VideoToolbox.
+3. **`xrmc-decode` per platform:** hardware decoding through FFmpeg hwaccels is in.
+   - VA-API is verified on Linux: output bit-exact with software, 12 concurrent 720p streams.
+   - V4L2 (Raspberry Pi), VideoToolbox and D3D11VA/DXVA2 haven't been tested on real hardware.
+   - Next: Android MediaCodec, and zero-copy import into the compositor.
 4. **`xrmc-remote`:** remote API server compatible with the existing tablet dashboard and hardware tools.
 5. **Desktop app on egui:** reaches parity with the Electron app, then replaces it.

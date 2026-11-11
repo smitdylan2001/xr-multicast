@@ -20,11 +20,11 @@ struct Tile {
     lens: vec4<f32>,    // k1, k2, zoom, eye aspect (w / h in pixels)
     chroma: vec4<f32>,  // radial scale r, g, b; output aspect (w / h)
     look: vec4<f32>,    // flip x, flip y, grid (0/1), blur (0/1)
-    mode: vec4<u32>,    // 0 = raw / 1 = lens corrected, quarter turns clockwise, stereo (0/1), nv12 (0/1)
+    mode: vec4<u32>,    // 0 = raw / 1 = lens corrected, quarter turns clockwise, stereo (0/1), interleaved UV: NV12 / P010 (0/1)
     yuv_r: vec4<f32>,   // rgb = (dot(yuv_r, s), dot(yuv_g, s), dot(yuv_b, s)), s = (y, u, v, 1)
     yuv_g: vec4<f32>,
     yuv_b: vec4<f32>,
-    tex: vec4<f32>,     // sample scale (10-bit in R16), chroma uv scale x, y, 1 = linearise output (sRGB target)
+    tex: vec4<f32>,     // sample scale (10-bit in R16 / RG16), chroma uv scale x, y, 1 = linearise output (sRGB target)
 };
 
 @group(0) @binding(0) var tex_y: texture_2d<f32>;

@@ -7,7 +7,8 @@
 //!          --seconds S       quit after S seconds
 //!          --screenshot P    save a PNG of the window (egui screenshot) after ~2 s
 //!          --snapshot P      save an offscreen `VideoRenderer::snapshot` of tile 1
-//!          --format F        i420 (default), nv12 or p10 (10-bit planar)
+//!          --format F        i420 (default), nv12, p10 (10-bit planar) or p010
+//!                            (10-bit Y + interleaved UV, MSB-aligned; hardware decoders)
 //! ```
 //!
 //! Each stream gets a new frame `fps` times per second, uploaded from the UI thread
@@ -64,6 +65,7 @@ fn parse_args() -> Args {
                     "i420" => PixelFormat::I420,
                     "nv12" => PixelFormat::Nv12,
                     "p10" => PixelFormat::I420P10,
+                    "p010" => PixelFormat::P010,
                     f => panic!("unknown format {f}"),
                 }
             }
@@ -293,6 +295,19 @@ fn convert(f: Frame, format: PixelFormat) -> Frame {
                 .flat_map(|(&a, &b)| [a, b])
                 .collect();
             vec![f.planes[0].clone(), plane(uv, 2, u)]
+        }
+        PixelFormat::P010 => {
+            // 8-bit code → 10-bit (<< 2) → MSB-aligned (<< 6).
+            let msb = |v: u8| (u16::from(v) << 8).to_le_bytes();
+            let (u, v) = (&f.planes[1], &f.planes[2]);
+            let y = f.planes[0].data.iter().flat_map(|&s| msb(s)).collect();
+            let uv = u
+                .data
+                .iter()
+                .zip(&v.data)
+                .flat_map(|(&a, &b)| [msb(a), msb(b)].concat())
+                .collect();
+            vec![plane(y, 2, &f.planes[0]), plane(uv, 4, u)]
         }
         PixelFormat::I420P10 => f
             .planes

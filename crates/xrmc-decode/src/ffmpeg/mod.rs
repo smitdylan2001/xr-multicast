@@ -5,18 +5,20 @@
 //! (FFmpeg 5.x–8.x). Unknown majors are refused because the `AVFrame` layout we
 //! read could differ.
 //!
-//! TODO(hw): hardware decoding (VA-API, V4L2 request, VideoToolbox, D3D11VA) needs
-//! `AVCodecContext.hw_device_ctx` and a `get_format` callback, which are plain
-//! struct fields at offsets that differ per major. Add per-major offsets (verified
-//! like the `AVFrame` layouts in `sys.rs`), `av_hwdevice_ctx_create`, and
-//! `av_hwframe_transfer_data` to download NV12/P010. Until then frames are decoded
-//! in software and `hw` is reported as `false`.
+//! Hardware decoding (see [`hw`]): the decoder gets `hw_device_ctx` and a
+//! `get_format` callback that only accepts the device's hw pixel format; decoded
+//! surfaces are downloaded with `av_hwframe_transfer_data` (NV12, or P010 for
+//! 10-bit). If the hardware path fails before it produced a picture, the
+//! download fails, or frames come out wrong, the stream is reopened in software
+//! (keeping its config; a failed key frame is re-decoded at once).
 
+pub mod hw;
 pub mod sys;
 
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use libloading::Library;
 
@@ -37,10 +39,14 @@ pub struct Lib {
     pub version_info: String,
     pub path: PathBuf,
     layout: FrameLayout,
+    /// `AVCodecContext` offsets for hardware decoding (`None`: unverified major / 32-bit).
+    pub(crate) ctx_offsets: Option<CodecCtxOffsets>,
+    pub(crate) hw: Option<hw::HwFns>,
     pix_yuv420p: c_int,
     pix_yuvj420p: c_int,
     pix_nv12: c_int,
     pix_yuv420p10le: c_int,
+    pix_p010le: c_int,
 
     find_decoder_by_name: FnFindDecoderByName,
     alloc_context3: FnAllocContext3,
@@ -76,7 +82,7 @@ impl Lib {
         )
     }
 
-    fn err(&self, code: c_int) -> String {
+    pub(crate) fn err(&self, code: c_int) -> String {
         let mut buf = [0 as c_char; 128];
         // SAFETY: buffer and length are valid; av_strerror always NUL-terminates.
         unsafe { (self.strerror)(code, buf.as_mut_ptr(), buf.len()) };
@@ -93,7 +99,7 @@ impl Lib {
                 prefer_hw: false,
                 threads: 1,
             };
-            FfmpegDecoder::open_named(self, codec, name, opts).is_ok()
+            FfmpegDecoder::open_named(self, codec, name, opts, None).is_ok()
         })
     }
 }
@@ -310,6 +316,20 @@ unsafe fn load(
         }
     };
     let pix = |name: &CStr| unsafe { get_pix_fmt(name.as_ptr()) };
+    let hw = (|| -> Result<hw::HwFns, String> {
+        Ok(hw::HwFns {
+            get_hw_config: sym!(avcodec, "avcodec_get_hw_config"),
+            device_ctx_create: sym!(avutil, "av_hwdevice_ctx_create"),
+            find_type_by_name: sym!(avutil, "av_hwdevice_find_type_by_name"),
+            get_type_name: sym!(avutil, "av_hwdevice_get_type_name"),
+            buffer_ref: sym!(avutil, "av_buffer_ref"),
+            buffer_unref: sym!(avutil, "av_buffer_unref"),
+            transfer_data: sym!(avutil, "av_hwframe_transfer_data"),
+            pix_fmt_name: sym!(avutil, "av_get_pix_fmt_name"),
+        })
+    })()
+    .map_err(|e| tracing::debug!("FFmpeg without hardware decoding: {e}"))
+    .ok();
     let level = if std::env::var_os("XRMC_FFMPEG_LOG").is_some() {
         AV_LOG_WARNING
     } else {
@@ -323,10 +343,13 @@ unsafe fn load(
         version_info,
         path: codec_path.to_path_buf(),
         layout,
+        ctx_offsets: CodecCtxOffsets::for_avcodec_major(cm),
+        hw,
         pix_yuv420p: pix(c"yuv420p"),
         pix_yuvj420p: pix(c"yuvj420p"),
         pix_nv12: pix(c"nv12"),
         pix_yuv420p10le: pix(c"yuv420p10le"),
+        pix_p010le: pix(c"p010le"),
         find_decoder_by_name: sym!(avcodec, "avcodec_find_decoder_by_name"),
         alloc_context3: sym!(avcodec, "avcodec_alloc_context3"),
         open2: sym!(avcodec, "avcodec_open2"),
@@ -349,14 +372,101 @@ unsafe fn load(
     })
 }
 
+/// State shared with the `get_format` callback (`AVCodecContext.opaque` points here).
+struct HwFormat {
+    /// The hw pixel format of the decoder's device (e.g. `vaapi`).
+    pix_fmt: c_int,
+    /// HEVC: refuse streams whose profile says 8-bit but whose samples aren't.
+    hevc: bool,
+    /// 8-bit 4:2:0 software formats (`yuv420p`, `yuvj420p`).
+    eight_bit: [c_int; 2],
+    /// The decoder offered no hw format (unsupported profile, size, …) or the
+    /// stream was refused.
+    refused: AtomicBool,
+    /// `profile` and `sw_pix_fmt` seen by the last `get_format` call (for tests).
+    seen: [AtomicI32; 2],
+}
+
+/// `get_format`: take the device's hw format when it is offered, else fail the
+/// decode (the stream then falls back to a software decoder with full threading).
+/// Must not panic or allocate.
+///
+/// HEVC streams that signal the Main (8-bit) profile but carry 10-bit samples
+/// (seen from GStreamer's `vah265enc`) are refused: FFmpeg's VA-API hwaccel picks
+/// the VA profile from `profile` and gets 8-bit surfaces, and the AMD VCN then
+/// writes past them (GPU page fault, ring reset, and Mesa aborts the process).
+unsafe extern "C" fn get_hw_format(ctx: *mut AVCodecContext, fmts: *const c_int) -> c_int {
+    let Some(off) = lib().and_then(|l| l.ctx_offsets) else {
+        return AV_PIX_FMT_NONE;
+    };
+    // SAFETY: `opaque` was set to a live `HwFormat` owned by the decoder, which
+    // frees the context before the `HwFormat`; `fmts` is terminated by NONE.
+    unsafe {
+        let state = CodecCtxOffsets::read::<*const HwFormat>(ctx, off.opaque);
+        if state.is_null() || fmts.is_null() {
+            return AV_PIX_FMT_NONE;
+        }
+        let state = &*state;
+        let profile: c_int = CodecCtxOffsets::read(ctx, off.profile);
+        let sw_pix_fmt: c_int = CodecCtxOffsets::read(ctx, off.sw_pix_fmt);
+        state.seen[0].store(profile, Ordering::Relaxed);
+        state.seen[1].store(sw_pix_fmt, Ordering::Relaxed);
+        if state.hevc
+            && (profile == AV_PROFILE_HEVC_MAIN || profile == AV_PROFILE_HEVC_MAIN_STILL_PICTURE)
+            && !state.eight_bit.contains(&sw_pix_fmt)
+        {
+            state.refused.store(true, Ordering::Relaxed);
+            return AV_PIX_FMT_NONE;
+        }
+        let mut p = fmts;
+        while *p != AV_PIX_FMT_NONE {
+            if *p == state.pix_fmt {
+                return *p;
+            }
+            p = p.add(1);
+        }
+        state.refused.store(true, Ordering::Relaxed);
+    }
+    AV_PIX_FMT_NONE
+}
+
+/// Hardware decoding state of a decoder.
+struct HwActive {
+    /// `None` for decoders that are hardware by themselves (V4L2 M2M: frames are
+    /// already in system memory).
+    format: Option<Box<HwFormat>>,
+    /// A correct frame came out of the hardware path.
+    verified: bool,
+    /// Consecutive key frames that failed to decode.
+    key_errors: u32,
+}
+
+/// Why a decode call failed.
+enum Fail {
+    /// The hardware path is unusable: switch to software.
+    Hw(String),
+    /// A decoder error: flush, then wait for the next key frame.
+    Decode(&'static str, c_int),
+    /// Returned as is.
+    Other(DecodeError),
+}
+
+/// Largest frame size accepted from a hardware decoder (anything else is garbage).
+const MAX_HW_DIM: c_int = 16384;
+
 /// One FFmpeg decoder instance.
 pub struct FfmpegDecoder {
     lib: &'static Lib,
     ctx: *mut AVCodecContext,
     pkt: *mut AVPacket,
     frame: *mut AVFrame,
+    /// Download target for hw frames (null for software decoders).
+    sw_frame: *mut AVFrame,
     name: String,
     stream: StreamState,
+    codec: Codec,
+    options: DecoderOptions,
+    hw: Option<HwActive>,
 }
 
 // SAFETY: the FFmpeg objects are owned exclusively by this value and only used
@@ -364,15 +474,32 @@ pub struct FfmpegDecoder {
 unsafe impl Send for FfmpegDecoder {}
 
 impl FfmpegDecoder {
-    /// Open the first available FFmpeg decoder for `codec`.
+    /// Open a decoder for `codec`: in hardware when `options.prefer_hw` and the
+    /// probe found a working hardware path, else the first available software decoder.
     pub fn open(
+        lib: &'static Lib,
+        codec: Codec,
+        options: DecoderOptions,
+    ) -> Result<FfmpegDecoder, DecodeError> {
+        if options.prefer_hw
+            && let Some(path) = hw::support(lib).for_codec(codec)
+        {
+            match Self::open_named(lib, codec, path.decoder, options, Some(path)) {
+                Ok(d) => return Ok(d),
+                Err(e) => tracing::debug!("{} {}: {e}", path.label, codec.as_str()),
+            }
+        }
+        Self::open_software(lib, codec, options)
+    }
+
+    fn open_software(
         lib: &'static Lib,
         codec: Codec,
         options: DecoderOptions,
     ) -> Result<FfmpegDecoder, DecodeError> {
         let mut last = None;
         for name in decoder_names(codec) {
-            match Self::open_named(lib, codec, name, options) {
+            match Self::open_named(lib, codec, name, options, None) {
                 Ok(d) => return Ok(d),
                 Err(e) => last = Some(e),
             }
@@ -385,6 +512,7 @@ impl FfmpegDecoder {
         codec: Codec,
         name: &str,
         options: DecoderOptions,
+        hw_path: Option<&hw::HwPath>,
     ) -> Result<FfmpegDecoder, DecodeError> {
         let cname = CString::new(name).expect("decoder name");
         // SAFETY: plain FFmpeg API calls; every allocation is owned by `dec` (freed in Drop).
@@ -398,15 +526,24 @@ impl FfmpegDecoder {
                 ctx: (lib.alloc_context3)(avcodec),
                 pkt: (lib.packet_alloc)(),
                 frame: (lib.frame_alloc)(),
+                sw_frame: std::ptr::null_mut(),
                 name: format!("ffmpeg:{name}"),
                 stream: StreamState::new(codec),
+                codec,
+                options,
+                hw: None,
             };
             if dec.ctx.is_null() || dec.pkt.is_null() || dec.frame.is_null() {
                 return Err(DecodeError::Decode("FFmpeg allocation failed".into()));
             }
+            if let Some(path) = hw_path {
+                dec.attach_hw(avcodec, path)?;
+            }
             // Low latency: no frame threading (it delays output by threads-1 frames),
-            // output every picture as soon as it is decoded.
-            dec.set_int(c"threads", i64::from(options.threads));
+            // output every picture as soon as it is decoded. Hardware decoders
+            // don't use the CPU threads.
+            let threads = if dec.hw.is_some() { 1 } else { options.threads };
+            dec.set_int(c"threads", i64::from(threads));
             dec.set(c"thread_type", c"slice");
             dec.set(c"flags", c"+low_delay");
             dec.set(c"flags2", c"+fast");
@@ -419,12 +556,79 @@ impl FfmpegDecoder {
             let ret = (lib.open2)(dec.ctx, avcodec, std::ptr::null_mut());
             if ret < 0 {
                 return Err(DecodeError::Decode(format!(
-                    "avcodec_open2({name}): {}",
+                    "avcodec_open2({}): {}",
+                    dec.name,
                     lib.err(ret)
                 )));
             }
             Ok(dec)
         }
+    }
+
+    /// Set up hardware decoding on a fresh (unopened) context.
+    fn attach_hw(&mut self, avcodec: *const AVCodec, path: &hw::HwPath) -> Result<(), DecodeError> {
+        let lib = self.lib;
+        let unsupported = |why: String| DecodeError::Decode(format!("{}: {why}", path.label));
+        self.name = if path.api == "v4l2m2m" {
+            format!("ffmpeg:{}", path.decoder)
+        } else {
+            format!("ffmpeg:{}+{}", path.decoder, path.api)
+        };
+        let Some(device) = path.device else {
+            self.hw = Some(HwActive {
+                format: None,
+                verified: false,
+                key_errors: 0,
+            });
+            return Ok(());
+        };
+        let (Some(fns), Some(off)) = (&lib.hw, lib.ctx_offsets) else {
+            return Err(unsupported("needs a verified libavcodec".into()));
+        };
+        let pix_fmt = hw::device_pix_fmt(lib, avcodec, device.type_id)
+            .ok_or_else(|| unsupported("decoder doesn't support the device".into()))?;
+        // SAFETY: `ctx` is a fresh AVCodecContext of the libavcodec major the
+        // offsets were verified for. The defaults are checked first as a guard
+        // against a wrong layout.
+        unsafe {
+            let opaque: *mut c_void = CodecCtxOffsets::read(self.ctx, off.opaque);
+            let device_ctx: *mut c_void = CodecCtxOffsets::read(self.ctx, off.hw_device_ctx);
+            let get_format: *const c_void = CodecCtxOffsets::read(self.ctx, off.get_format);
+            if !opaque.is_null() || !device_ctx.is_null() || get_format.is_null() {
+                return Err(unsupported("unexpected AVCodecContext layout".into()));
+            }
+            let device_ref = device.open_ref(lib, path.own_device);
+            if device_ref.is_null() {
+                return Err(unsupported("av_buffer_ref failed".into()));
+            }
+            self.sw_frame = (lib.frame_alloc)();
+            if self.sw_frame.is_null() {
+                let mut r = device_ref;
+                (fns.buffer_unref)(&mut r);
+                return Err(DecodeError::Decode("FFmpeg allocation failed".into()));
+            }
+            let format = Box::new(HwFormat {
+                pix_fmt,
+                hevc: self.codec == Codec::H265,
+                eight_bit: [lib.pix_yuv420p, lib.pix_yuvj420p],
+                refused: AtomicBool::new(false),
+                seen: [AtomicI32::new(i32::MIN), AtomicI32::new(i32::MIN)],
+            });
+            // The context owns `device_ref` from here (avcodec_free_context unrefs it).
+            CodecCtxOffsets::write(self.ctx, off.hw_device_ctx, device_ref);
+            CodecCtxOffsets::write(
+                self.ctx,
+                off.opaque,
+                &*format as *const HwFormat as *mut c_void,
+            );
+            CodecCtxOffsets::write::<GetFormatFn>(self.ctx, off.get_format, get_hw_format);
+            self.hw = Some(HwActive {
+                format: Some(format),
+                verified: false,
+                key_errors: 0,
+            });
+        }
+        Ok(())
     }
 
     fn set(&mut self, key: &CStr, val: &CStr) {
@@ -464,7 +668,32 @@ impl FfmpegDecoder {
         DecodeError::Decode(format!("{}: {what}: {}", self.name, self.lib.err(code)))
     }
 
-    fn send(&mut self, data: &[u8], pts: u64, key: bool) -> c_int {
+    /// Classify a decoder error: hardware faults switch to software.
+    fn error(&mut self, what: &'static str, code: c_int, key: bool) -> Fail {
+        let Some(hw) = &mut self.hw else {
+            return Fail::Decode(what, code);
+        };
+        if key {
+            hw.key_errors += 1;
+        }
+        let refused = hw
+            .format
+            .as_ref()
+            .is_some_and(|f| f.refused.load(Ordering::Relaxed));
+        if refused {
+            Fail::Hw("the hardware doesn't support this stream".into())
+        } else if !hw.verified || hw.key_errors >= 3 {
+            Fail::Hw(format!("{what}: {}", self.lib.err(code)))
+        } else {
+            Fail::Decode(what, code)
+        }
+    }
+
+    fn send(&mut self, data: Option<&[u8]>, pts: u64, key: bool) -> c_int {
+        let Some(data) = data else {
+            // SAFETY: a NULL packet starts draining.
+            return unsafe { (self.lib.send_packet)(self.ctx, std::ptr::null()) };
+        };
         let Ok(len) = c_int::try_from(data.len()) else {
             return -22; // AVERROR(EINVAL)
         };
@@ -485,7 +714,30 @@ impl FfmpegDecoder {
         }
     }
 
-    fn drain(&mut self, fallback_pts: u64, out: &mut Vec<Frame>) -> Result<(), DecodeError> {
+    /// Decode one access unit (no fallback handling).
+    fn decode(&mut self, payload: &[u8], pts: u64, key: bool) -> Result<Vec<Frame>, Fail> {
+        let mut out = Vec::new();
+        let mut ret = self.send(Some(payload), pts, key);
+        if ret == AVERROR_EAGAIN {
+            // Output pending (should not happen in low-delay mode): drain, then retry once.
+            self.drain(pts, key, &mut out)?;
+            ret = self.send(Some(payload), pts, key);
+        }
+        if ret < 0 {
+            return Err(self.error("send_packet", ret, key));
+        }
+        self.stream.fed();
+        self.drain(pts, key, &mut out)?;
+        if key
+            && !out.is_empty()
+            && let Some(hw) = &mut self.hw
+        {
+            hw.key_errors = 0;
+        }
+        Ok(out)
+    }
+
+    fn drain(&mut self, fallback_pts: u64, key: bool, out: &mut Vec<Frame>) -> Result<(), Fail> {
         loop {
             // SAFETY: valid context and frame.
             let ret = unsafe { (self.lib.receive_frame)(self.ctx, self.frame) };
@@ -493,15 +745,134 @@ impl FfmpegDecoder {
                 return Ok(());
             }
             if ret < 0 {
-                return Err(self.fail("receive_frame", ret));
+                return Err(self.error("receive_frame", ret, key));
             }
-            // SAFETY: the frame was just filled by the libavutil this layout belongs to.
-            let fields = unsafe { read_frame(self.lib.layout, self.frame) };
-            let frame = self.convert(&fields, fallback_pts);
-            // SAFETY: valid frame.
-            unsafe { (self.lib.frame_unref)(self.frame) };
-            out.push(frame?);
+            let frame = self.take_frame(fallback_pts);
+            // SAFETY: valid frames.
+            unsafe {
+                (self.lib.frame_unref)(self.frame);
+                if !self.sw_frame.is_null() {
+                    (self.lib.frame_unref)(self.sw_frame);
+                }
+            }
+            let frame = frame?;
+            if let Some(hw) = &mut self.hw {
+                hw.verified = true;
+            }
+            out.push(frame);
         }
+    }
+
+    /// Convert the received frame (downloading it first if it's a hw surface).
+    fn take_frame(&mut self, fallback_pts: u64) -> Result<Frame, Fail> {
+        let lib = self.lib;
+        // SAFETY: the frame was just filled by the libavutil this layout belongs to.
+        let fields = unsafe { read_frame(lib.layout, self.frame) };
+        let Some(hw) = &self.hw else {
+            return self.convert(&fields, fallback_pts).map_err(Fail::Other);
+        };
+        let Some(format) = &hw.format else {
+            // V4L2 M2M: already in system memory.
+            return self
+                .convert(&fields, fallback_pts)
+                .map_err(|e| Fail::Hw(e.to_string()));
+        };
+        if fields.format != format.pix_fmt {
+            return Err(Fail::Hw(format!(
+                "decoder output {} instead of hardware frames",
+                hw::pix_fmt_name(lib, fields.format)
+            )));
+        }
+        let fns = lib.hw.as_ref().expect("hw functions");
+        // SAFETY: `frame` holds a hw surface; `sw_frame` is empty, so FFmpeg
+        // allocates it in the surface's download format (NV12 / P010).
+        let ret = unsafe { (fns.transfer_data)(self.sw_frame, self.frame, 0) };
+        if ret < 0 {
+            return Err(Fail::Hw(format!(
+                "av_hwframe_transfer_data: {}",
+                lib.err(ret)
+            )));
+        }
+        // SAFETY: as above.
+        let sw = unsafe { read_frame(lib.layout, self.sw_frame) };
+        if sw.width != fields.width
+            || sw.height != fields.height
+            || !(1..=MAX_HW_DIM).contains(&sw.width)
+            || !(1..=MAX_HW_DIM).contains(&sw.height)
+        {
+            return Err(Fail::Hw(format!(
+                "bad frame size {}x{} (surface {}x{})",
+                sw.width, sw.height, fields.width, fields.height
+            )));
+        }
+        let merged = FrameFields {
+            data: sw.data,
+            linesize: sw.linesize,
+            width: sw.width,
+            height: sw.height,
+            format: sw.format,
+            ..fields
+        };
+        self.convert(&merged, fallback_pts)
+            .map_err(|e| Fail::Hw(e.to_string()))
+    }
+
+    /// Replace this decoder with a software one for the same stream (keeps the
+    /// config and key-frame state).
+    fn fall_back_to_software(&mut self, why: &str) -> Result<(), DecodeError> {
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::debug!("{}: {why}; switching to software decoding", self.name);
+        } else {
+            tracing::warn!(
+                "{}: hardware decoding failed ({why}); switching to software decoding for this stream",
+                self.name
+            );
+        }
+        let opts = DecoderOptions {
+            prefer_hw: false,
+            ..self.options
+        };
+        let mut sw = Self::open_software(self.lib, self.codec, opts)?;
+        std::mem::swap(&mut sw.stream, &mut self.stream);
+        *self = sw;
+        Ok(())
+    }
+
+    /// Decode one sample key frame (for the hardware probe): the first frame, or
+    /// why none came out of the hardware path.
+    fn probe_decode(&mut self, data: &[u8]) -> Result<Frame, String> {
+        let why = |f: Fail| match f {
+            Fail::Hw(s) => s,
+            Fail::Decode(what, code) => format!("{what}: {}", self.lib.err(code)),
+            Fail::Other(e) => e.to_string(),
+        };
+        let mut out = match self.decode(data, 0, true) {
+            Ok(out) => out,
+            Err(f) => return Err(why(f)),
+        };
+        if out.is_empty() {
+            // Decoders with output delay (V4L2 M2M): drain.
+            if self.send(None, 0, true) >= 0
+                && let Err(f) = self.drain(0, true, &mut out)
+            {
+                return Err(why(f));
+            }
+        }
+        if self.hw.is_none() {
+            return Err("not decoded in hardware".into());
+        }
+        out.into_iter().next().ok_or_else(|| "no frame".into())
+    }
+
+    /// `profile` and `sw_pix_fmt` seen by the last `get_format` call.
+    #[cfg(test)]
+    fn hw_seen(&self) -> Option<(c_int, c_int)> {
+        let f = self.hw.as_ref()?.format.as_ref()?;
+        Some((
+            f.seen[0].load(Ordering::Relaxed),
+            f.seen[1].load(Ordering::Relaxed),
+        ))
     }
 
     fn convert(&self, f: &FrameFields, fallback_pts: u64) -> Result<Frame, DecodeError> {
@@ -511,10 +882,12 @@ impl FfmpegDecoder {
             x if x == lib.pix_yuvj420p => (PixelFormat::I420, true),
             x if x == lib.pix_nv12 => (PixelFormat::Nv12, false),
             x if x == lib.pix_yuv420p10le => (PixelFormat::I420P10, false),
+            x if x == lib.pix_p010le => (PixelFormat::P010, false),
             other => {
                 return Err(DecodeError::Decode(format!(
-                    "{}: unsupported pixel format {other}",
-                    self.name
+                    "{}: unsupported pixel format {}",
+                    self.name,
+                    hw::pix_fmt_name(lib, other)
                 )));
             }
         };
@@ -526,10 +899,12 @@ impl FfmpegDecoder {
         }
         let (w, h) = (f.width as u32, f.height as u32);
         let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        // (width, height, bytes per sample position) per plane.
         let layout: &[(u32, u32, usize)] = match format {
             PixelFormat::I420 => &[(w, h, 1), (cw, ch, 1), (cw, ch, 1)],
             PixelFormat::I420P10 => &[(w, h, 2), (cw, ch, 2), (cw, ch, 2)],
             PixelFormat::Nv12 => &[(w, h, 1), (cw, ch, 2)],
+            PixelFormat::P010 => &[(w, h, 2), (cw, ch, 4)],
         };
         let mut planes = Vec::with_capacity(layout.len());
         for (i, &(pw, ph, bpp)) in layout.iter().enumerate() {
@@ -603,23 +978,34 @@ impl Decoder for FfmpegDecoder {
             Prepared::Skip => return Ok(Vec::new()),
             Prepared::Feed(p) => p,
         };
-        let mut out = Vec::new();
-        let mut ret = self.send(&payload, pts, key);
-        if ret == AVERROR_EAGAIN {
-            // Output pending (should not happen in low-delay mode): drain, then retry once.
-            self.drain(pts, &mut out)?;
-            ret = self.send(&payload, pts, key);
+        let mut result = self.decode(&payload, pts, key);
+        if let Err(Fail::Hw(why)) = &result {
+            let why = why.clone();
+            self.fall_back_to_software(&why)?;
+            if !key {
+                // References are gone: resume at the next key frame.
+                self.stream.on_error();
+                return Ok(Vec::new());
+            }
+            result = self.decode(&payload, pts, key);
         }
-        if ret < 0 {
-            return Err(self.fail("send_packet", ret));
+        match result {
+            Ok(out) => Ok(out),
+            Err(Fail::Decode(what, code)) => Err(self.fail(what, code)),
+            Err(Fail::Hw(why)) => {
+                self.stream.on_error();
+                Err(DecodeError::Decode(format!("{}: {why}", self.name)))
+            }
+            Err(Fail::Other(e)) => Err(e),
         }
-        self.stream.fed();
-        self.drain(pts, &mut out)?;
-        Ok(out)
     }
 
     fn backend(&self) -> &str {
         &self.name
+    }
+
+    fn is_hardware(&self) -> bool {
+        self.hw.is_some()
     }
 
     fn waiting_for_key_frame(&self) -> bool {
@@ -630,8 +1016,12 @@ impl Decoder for FfmpegDecoder {
 impl Drop for FfmpegDecoder {
     fn drop(&mut self) {
         // SAFETY: each free function accepts a pointer to a (possibly null) pointer.
+        // The context (whose `opaque` points at `hw.format`) goes before `hw`.
         unsafe {
             (self.lib.frame_free)(&mut self.frame);
+            if !self.sw_frame.is_null() {
+                (self.lib.frame_free)(&mut self.sw_frame);
+            }
             (self.lib.packet_free)(&mut self.pkt);
             (self.lib.free_context)(&mut self.ctx);
         }

@@ -220,7 +220,24 @@ pub fn yuv_at(f: &Frame, x: u32, y: u32) -> (u8, u8, u8) {
             };
             (s(&p[0], x, y), s(&p[1], cx, cy), s(&p[2], cx, cy))
         }
+        PixelFormat::P010 => {
+            let s = |pl: &xrmc_decode::Plane, i: usize| {
+                let v = u16::from_le_bytes([pl.data[i], pl.data[i + 1]]);
+                assert!(v & 0x3f == 0, "P010 sample with low bits set: {v:#x}");
+                (v >> 8) as u8
+            };
+            (
+                s(&p[0], y * p[0].stride + 2 * x),
+                s(&p[1], cy * p[1].stride + 4 * cx),
+                s(&p[1], cy * p[1].stride + 4 * cx + 2),
+            )
+        }
     }
+}
+
+/// Whether a format has 10-bit samples.
+pub fn is_ten_bit(format: PixelFormat) -> bool {
+    matches!(format, PixelFormat::I420P10 | PixelFormat::P010)
 }
 
 /// 100 % SMPTE colour bars (BT.601, limited range) as GStreamer's videotestsrc draws them.
@@ -250,9 +267,11 @@ pub fn assert_smpte(f: &Frame) {
 /// Check plane geometry for a frame.
 pub fn assert_geometry(f: &Frame, w: u32, h: u32, format: PixelFormat) {
     assert_eq!((f.width, f.height, f.format), (w, h, format));
-    let bpp = if format == PixelFormat::I420P10 { 2 } else { 1 };
+    let bpp = if is_ten_bit(format) { 2 } else { 1 };
     let expect: Vec<(u32, u32, usize)> = match format {
-        PixelFormat::Nv12 => vec![(w, h, 1), (w.div_ceil(2), h.div_ceil(2), 2)],
+        PixelFormat::Nv12 | PixelFormat::P010 => {
+            vec![(w, h, bpp), (w.div_ceil(2), h.div_ceil(2), 2 * bpp)]
+        }
         _ => vec![
             (w, h, bpp),
             (w.div_ceil(2), h.div_ceil(2), bpp),
@@ -264,5 +283,92 @@ pub fn assert_geometry(f: &Frame, w: u32, h: u32, format: PixelFormat) {
         assert_eq!((p.width, p.height), (pw, ph));
         assert!(p.stride >= pw as usize * b);
         assert!(p.data.len() >= p.stride * (ph as usize - 1) + pw as usize * b);
+    }
+}
+
+/// Synthetic 1280x720 streams for throughput and concurrency tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Synth {
+    H264,
+    H265,
+    H265Main10,
+    Av1Main10,
+}
+
+/// 1280x720 moving SMPTE bars + clock at ~8 Mbit/s (like scrcpy's default),
+/// `frames` long, one key frame, no B-frames. Generated once with GStreamer
+/// into the temp dir (hardware encoders where available, else x264/x265/SVT-AV1).
+/// `None` if GStreamer or the encoders are unavailable.
+pub fn synthetic_720p(kind: Synth, frames: u32) -> Option<Vec<u8>> {
+    let (ext, encoders, caps): (&str, &[(&str, &str)], &str) = match kind {
+        Synth::H264 => (
+            "h264",
+            &[(
+                "I420",
+                "x264enc tune=zerolatency bframes=0 key-int-max=100000 bitrate=8000 speed-preset=veryfast",
+            )],
+            "video/x-h264,profile=high,stream-format=byte-stream,alignment=au",
+        ),
+        Synth::H265 => (
+            "h265",
+            &[
+                ("NV12", "vah265enc b-frames=0 key-int-max=1024 bitrate=8000"),
+                (
+                    "I420",
+                    "x265enc tune=zerolatency key-int-max=100000 bitrate=8000 speed-preset=veryfast",
+                ),
+            ],
+            "video/x-h265,profile=main,stream-format=byte-stream,alignment=au",
+        ),
+        // Not vah265enc: (GStreamer 1.26 / Mesa 26) it labels Main 10 streams as Main.
+        Synth::H265Main10 => (
+            "h265",
+            &[(
+                "I420_10LE",
+                "x265enc tune=zerolatency key-int-max=100000 bitrate=8000 speed-preset=veryfast",
+            )],
+            "video/x-h265,profile=main-10,stream-format=byte-stream,alignment=au",
+        ),
+        Synth::Av1Main10 => (
+            "obu",
+            &[
+                ("P010_10LE", "vaav1enc key-int-max=1024 bitrate=8000"),
+                ("I420_10LE", "svtav1enc preset=10 target-bitrate=8000"),
+            ],
+            "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu",
+        ),
+    };
+    let path = std::env::temp_dir().join(format!("xrmc-decode-720p-{kind:?}-{frames}-v2.{ext}"));
+    if !path.exists() {
+        let tmp = path.with_extension("part");
+        let ok = encoders.iter().any(|(raw, enc)| {
+            let pipeline = format!(
+                "videotestsrc pattern=smpte horizontal-speed=4 num-buffers={frames} \
+                 ! video/x-raw,width=1280,height=720,framerate=60/1 ! timeoverlay font-desc=\"Sans 60\" \
+                 ! videoconvert ! video/x-raw,format={raw} ! {enc} ! {caps} ! filesink location={}",
+                tmp.display()
+            );
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("gst-launch-1.0 -q {pipeline}"))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+                && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 1000)
+        });
+        if !ok || std::fs::rename(&tmp, &path).is_err() {
+            return None;
+        }
+    }
+    std::fs::read(path).ok()
+}
+
+/// scrcpy-style packets of a synthetic stream.
+pub fn synthetic_packets(kind: Synth, data: &[u8]) -> Vec<Packet> {
+    match kind {
+        Synth::H264 => annexb_packets(data, false),
+        Synth::H265 | Synth::H265Main10 => annexb_packets(data, true),
+        Synth::Av1Main10 => av1_packets(data, true, true),
     }
 }

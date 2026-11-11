@@ -123,11 +123,13 @@ fn make_frame(
     pad: usize,
     f: impl Fn(u32, u32) -> Rgb,
 ) -> Frame {
-    let bits = if format == PixelFormat::I420P10 {
+    let bits = if matches!(format, PixelFormat::I420P10 | PixelFormat::P010) {
         10
     } else {
         8
     };
+    // P010 keeps the 10-bit code in the high bits of each u16.
+    let shift = if format == PixelFormat::P010 { 6 } else { 0 };
     let bps = if bits == 10 { 2 } else { 1 };
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let ycc: Vec<[f64; 3]> = (0..h)
@@ -148,7 +150,7 @@ fn make_frame(
     };
     let put = |data: &mut Vec<u8>, v: u16| {
         if bps == 2 {
-            data.extend_from_slice(&v.to_le_bytes());
+            data.extend_from_slice(&(v << shift).to_le_bytes());
         } else {
             data.push(v as u8);
         }
@@ -170,16 +172,22 @@ fn make_frame(
         height: ph,
     };
     let mut planes = vec![plane(yp, w as usize * bps + pad, w, h)];
-    if format == PixelFormat::Nv12 {
+    if matches!(format, PixelFormat::Nv12 | PixelFormat::P010) {
         let mut uv = Vec::new();
         for cy in 0..ch {
             for cx in 0..cw {
-                uv.push(code(chroma(cx, cy, 1), false, color.full_range, 8) as u8);
-                uv.push(code(chroma(cx, cy, 2), false, color.full_range, 8) as u8);
+                put(
+                    &mut uv,
+                    code(chroma(cx, cy, 1), false, color.full_range, bits),
+                );
+                put(
+                    &mut uv,
+                    code(chroma(cx, cy, 2), false, color.full_range, bits),
+                );
             }
             uv.extend(std::iter::repeat_n(0x5A, pad));
         }
-        planes.push(plane(uv, cw as usize * 2 + pad, cw, ch));
+        planes.push(plane(uv, cw as usize * 2 * bps + pad, cw, ch));
     } else {
         for k in [1, 2] {
             let mut p = Vec::new();
@@ -380,6 +388,73 @@ fn yuv_i420p10_16bit_and_fallback() {
     );
 }
 
+/// P010 (hardware decoders' 10-bit output): Y in R16Unorm + UV in RG16Unorm with the
+/// MSB-aligned samples scaled back to 10-bit codes, or converted to 8-bit NV12.
+#[test]
+fn yuv_p010_16bit_and_fallback() {
+    let r = renderer();
+    eprintln!("16-bit textures: {}", r.has_16bit_textures());
+    check_bands(
+        &r,
+        &band_frame(PixelFormat::P010, LIMITED_709, 0),
+        2,
+        "P010",
+    );
+    check_bands(
+        &r,
+        &band_frame(
+            PixelFormat::P010,
+            ColorInfo {
+                bt709: false,
+                full_range: true,
+            },
+            6,
+        ),
+        2,
+        "P010 full + pad",
+    );
+    r.disable_16bit_textures();
+    assert!(!r.has_16bit_textures());
+    check_bands(
+        &r,
+        &band_frame(PixelFormat::P010, LIMITED_709, 0),
+        3,
+        "P010 → 8-bit fallback",
+    );
+    check_bands(
+        &r,
+        &band_frame(PixelFormat::P010, LIMITED_709, 10),
+        3,
+        "P010 → 8-bit fallback + pad",
+    );
+}
+
+/// A P010 frame and the same picture as I420P10 render identically.
+#[test]
+fn p010_matches_i420p10() {
+    let r = renderer();
+    let f = |format| {
+        make_frame(96, 48, format, LIMITED_709, 0, |x, y| {
+            let c = BANDS[((x / 12) as usize).min(7)];
+            if y < 24 {
+                c
+            } else {
+                [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5]
+            }
+        })
+    };
+    let params = TileParams {
+        view: ViewMode::Raw,
+        ..Default::default()
+    };
+    r.try_upload("a", &f(PixelFormat::I420P10)).unwrap();
+    r.try_upload("b", &f(PixelFormat::P010)).unwrap();
+    let a = r.snapshot("a", &params, 96, 48).unwrap();
+    let b = r.snapshot("b", &params, 96, 48).unwrap();
+    let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+    assert!(worst <= 1, "max channel difference {worst}");
+}
+
 #[test]
 fn ten_bit_precision_survives_on_16bit_textures() {
     let r = renderer();
@@ -431,10 +506,57 @@ fn ten_bit_precision_survives_on_16bit_textures() {
     }
 }
 
+/// Same for P010: the MSB-aligned samples keep all 10 bits.
+#[test]
+fn p010_precision_survives_on_16bit_textures() {
+    let r = renderer();
+    if !r.has_16bit_textures() {
+        eprintln!("skipped: no 16-bit textures on this adapter");
+        return;
+    }
+    let full = ColorInfo {
+        bt709: true,
+        full_range: true,
+    };
+    let mut f = make_frame(256, 4, PixelFormat::P010, full, 0, |_, _| BLACK);
+    for y in 0..4 {
+        for x in 0..256usize {
+            let v = ((300 + x) as u16) << 6;
+            f.planes[0].data[(y * 256 + x) * 2..(y * 256 + x) * 2 + 2]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    for s in f.planes[1].data.as_chunks_mut::<2>().0.iter_mut() {
+        s.copy_from_slice(&(512u16 << 6).to_le_bytes());
+    }
+    r.try_upload("s", &f).unwrap();
+    let img = r
+        .snapshot(
+            "s",
+            &TileParams {
+                view: ViewMode::Raw,
+                ..Default::default()
+            },
+            256,
+            4,
+        )
+        .unwrap();
+    for x in 0..256 {
+        let want = (300.0 + x as f32) / 1023.0 * 255.0;
+        let got = px(&img, 256, x, 1)[1] as f32;
+        assert!((got - want).abs() <= 1.0, "x {x}: {got} vs {want}");
+    }
+}
+
 #[test]
 fn stride_padding_and_odd_sizes() {
     let r = renderer();
-    for format in [PixelFormat::I420, PixelFormat::Nv12, PixelFormat::I420P10] {
+    for format in [
+        PixelFormat::I420,
+        PixelFormat::Nv12,
+        PixelFormat::I420P10,
+        PixelFormat::P010,
+    ] {
         // Odd stride (13 bytes of padding) and an odd frame size.
         let f = make_frame(131, 17, format, LIMITED_709, 13, |x, _| {
             BANDS[((x / 16) as usize).min(7)]
