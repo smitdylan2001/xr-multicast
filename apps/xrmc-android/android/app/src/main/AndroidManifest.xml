@@ -12,6 +12,10 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- mDNS (_adb-tls-connect._tcp / _adb._tcp) while scanning. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Keep connections alive while casting in the background (CastService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="XR MultiCast"
@@ -40,5 +44,9 @@
             <!-- GameActivity loads lib<value>.so, i.e. the Rust cdylib. -->
             <meta-data android:name="android.app.lib_name" android:value="xrmc_android" />
         </activity>
+        <service
+            android:name=".CastService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

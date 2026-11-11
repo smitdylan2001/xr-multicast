@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,6 +23,11 @@ use crate::model::needs_reset;
 pub const QUEUE: usize = 180;
 /// Side of the luma image analysed for layout detection (like the Electron app).
 pub const DETECT_SIZE: usize = 96;
+/// While an asynchronous decoder (MediaCodec) has pictures in flight, the worker
+/// checks for finished pictures this often instead of waiting for the next packet.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// How long one check may block in the decoder.
+pub const POLL_WAIT: Duration = Duration::from_millis(4);
 /// No frame this long after the first packet: the codec can't be decoded here.
 pub const NO_FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -285,28 +290,7 @@ impl WorkerState {
         match dec.push(&p.data, p.pts, p.key, p.config) {
             Ok(frames) => {
                 self.errors = 0;
-                if let Some(frame) = frames.into_iter().last() {
-                    self.got_frame = true;
-                    self.output.frames.fetch_add(1, Ordering::Relaxed);
-                    self.output
-                        .bit_depth
-                        .store(bit_depth(&frame), Ordering::Relaxed);
-                    if self.detector.due(now) {
-                        let g = luma_grid(&frame, DETECT_SIZE).and_then(|l| {
-                            layout::detect_grid(&l, DETECT_SIZE, DETECT_SIZE).map(|g| g.shape())
-                        });
-                        if self.detector.feed(now, g)
-                            && let Ok(mut slot) = self.output.grid.lock()
-                        {
-                            *slot = self.detector.grid;
-                        }
-                    }
-                    self.output.put(DecodedFrame {
-                        frame,
-                        generation: self.generation,
-                    });
-                    (self.wake)();
-                }
+                self.on_frames(frames, now);
             }
             Err(e) => {
                 self.errors += 1;
@@ -324,10 +308,76 @@ impl WorkerState {
             self.fail("no frames decoded".into());
         }
     }
+
+    fn pending_output(&self) -> bool {
+        !self.failed
+            && self
+                .decoder
+                .as_ref()
+                .is_some_and(|(_, d)| d.has_pending_output())
+    }
+
+    /// Collect pictures an asynchronous decoder finished since the last packet.
+    fn poll_decoder(&mut self) {
+        let Some((_, dec)) = self.decoder.as_mut() else {
+            return;
+        };
+        match dec.poll(POLL_WAIT) {
+            Ok(frames) => self.on_frames(frames, Instant::now()),
+            Err(e) => {
+                self.errors += 1;
+                tracing::debug!("[{}] decoder error: {e}", self.id);
+                if self.errors >= 3 {
+                    self.fail(format!("decoder error: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Publish the newest of `frames` to the UI (and run layout detection now and then).
+    fn on_frames(&mut self, frames: Vec<Frame>, now: Instant) {
+        if let Some(frame) = frames.into_iter().last() {
+            self.got_frame = true;
+            self.output.frames.fetch_add(1, Ordering::Relaxed);
+            self.output
+                .bit_depth
+                .store(bit_depth(&frame), Ordering::Relaxed);
+            if self.detector.due(now) {
+                let g = luma_grid(&frame, DETECT_SIZE).and_then(|l| {
+                    layout::detect_grid(&l, DETECT_SIZE, DETECT_SIZE).map(|g| g.shape())
+                });
+                if self.detector.feed(now, g)
+                    && let Ok(mut slot) = self.output.grid.lock()
+                {
+                    *slot = self.detector.grid;
+                }
+            }
+            self.output.put(DecodedFrame {
+                frame,
+                generation: self.generation,
+            });
+            (self.wake)();
+        }
+    }
 }
 
 fn run_worker(mut st: WorkerState, rx: Receiver<Msg>) {
-    while let Ok(msg) = rx.recv() {
+    loop {
+        let msg = if st.pending_output() {
+            match rx.recv_timeout(POLL_INTERVAL) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => {
+                    st.poll_decoder();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            }
+        };
         match msg {
             Msg::Packet {
                 codec,

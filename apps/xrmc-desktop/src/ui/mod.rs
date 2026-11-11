@@ -826,7 +826,13 @@ impl App {
                 .cmds
                 .push(Cmd::Open(Dialog::Fix(Fix::BatteryLow("Demo booth".into())))),
             "codecs" => {
-                let id = first_tile.or(first_trusted);
+                let first_online = self
+                    .model
+                    .headsets
+                    .iter()
+                    .find(|h| h.is_online())
+                    .map(|h| h.id.clone());
+                let id = first_tile.or(first_trusted).or(first_online);
                 self.cmds.push(Cmd::Open(Dialog::codecs(id)));
             }
             "status" => {

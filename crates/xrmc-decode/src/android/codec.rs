@@ -18,10 +18,8 @@ use crate::{
 const BUFFER_FLAG_CODEC_CONFIG: u32 = 2;
 /// Picture size used when the stream's parameter sets can't be parsed.
 const DEFAULT_SIZE: (u32, u32) = (1920, 1080);
-/// How long to wait for a frame after queueing a packet (low-latency decoders answer in a few ms).
-const OUTPUT_WAIT: Duration = Duration::from_millis(15);
-/// After this many waits without a frame the decoder is treated as pipelined (no more waiting).
-const PIPELINED_AFTER: u32 = 4;
+/// Stop polling for a picture this long after the last packet (the decoder holds it until more input).
+const POLL_FOR: Duration = Duration::from_millis(500);
 /// Give up queueing a packet after this long (the decoder is stuck).
 const INPUT_DEADLINE: Duration = Duration::from_millis(250);
 
@@ -262,9 +260,69 @@ pub struct MediaCodecDecoder {
     stream: StreamState,
     sps_color: SpsColor,
     pending: u32,
-    wait: Duration,
-    missed: u32,
+    last_queued: Option<Instant>,
     logged_format: bool,
+    stats: Stats,
+}
+
+/// Decoder latency (packet queued → picture out), logged every [`STATS_EVERY`].
+#[derive(Default)]
+struct Stats {
+    queued: std::collections::VecDeque<(u64, Instant)>,
+    /// First packet (pts, arrival): how far arrivals fall behind the stream's clock.
+    first: Option<(u64, Instant)>,
+    lag_ms: i64,
+    since: Option<Instant>,
+    packets: u32,
+    frames: u32,
+    total: Duration,
+    max: Duration,
+}
+
+const STATS_EVERY: Duration = Duration::from_secs(10);
+
+impl Stats {
+    fn queued(&mut self, pts: u64) {
+        if self.queued.len() >= 64 {
+            self.queued.pop_front();
+        }
+        let now = Instant::now();
+        self.queued.push_back((pts, now));
+        self.packets += 1;
+        let (p0, t0) = *self.first.get_or_insert((pts, now));
+        self.lag_ms =
+            now.duration_since(t0).as_millis() as i64 - (pts.saturating_sub(p0) / 1000) as i64;
+    }
+
+    fn out(&mut self, pts: u64, backend: &str) {
+        let now = Instant::now();
+        if let Some(i) = self.queued.iter().position(|(p, _)| *p == pts) {
+            let d = now.duration_since(self.queued[i].1);
+            self.queued.drain(..=i);
+            self.frames += 1;
+            self.total += d;
+            self.max = self.max.max(d);
+        }
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) >= STATS_EVERY && self.frames > 0 {
+            tracing::info!(
+                "{backend}: {} packets → {} frames in {:.0} s ({:.1} fps), decode latency avg {:.1} ms, max {:.1} ms, arrival lag vs. stream clock {} ms",
+                self.packets,
+                self.frames,
+                now.duration_since(since).as_secs_f32(),
+                self.frames as f32 / now.duration_since(since).as_secs_f32(),
+                self.total.as_secs_f64() * 1000.0 / f64::from(self.frames),
+                self.max.as_secs_f64() * 1000.0,
+                self.lag_ms
+            );
+            *self = Stats {
+                queued: std::mem::take(&mut self.queued),
+                first: self.first,
+                since: Some(now),
+                ..Stats::default()
+            };
+        }
+    }
 }
 
 fn media_err(what: &str, code: isize) -> DecodeError {
@@ -273,13 +331,22 @@ fn media_err(what: &str, code: isize) -> DecodeError {
 
 impl MediaCodecDecoder {
     pub fn open(codec: Codec, _options: DecoderOptions) -> Result<MediaCodecDecoder, DecodeError> {
-        let names: Vec<(String, bool)> = match codec_list() {
+        let mut names: Vec<(String, bool)> = match codec_list() {
             Some(list) if !list.is_empty() => candidates(list, codec)
                 .into_iter()
                 .map(|i| (i.name.clone(), i.hardware && !i.software_only))
                 .collect(),
             _ => Vec::new(),
         };
+        // `XRMC_MEDIACODEC_DECODER=c2.android.avc.decoder,...`: try these decoders first.
+        if let Ok(pref) = std::env::var("XRMC_MEDIACODEC_DECODER") {
+            for want in pref.split(',').rev() {
+                if let Some(i) = names.iter().position(|(n, _)| n == want.trim()) {
+                    let n = names.remove(i);
+                    names.insert(0, n);
+                }
+            }
+        }
         if codec_list().is_some_and(|l| !l.is_empty()) && names.is_empty() {
             return Err(DecodeError::Unsupported(codec));
         }
@@ -295,9 +362,9 @@ impl MediaCodecDecoder {
             stream: StreamState::new(codec),
             sps_color: SpsColor::default(),
             pending: 0,
-            wait: OUTPUT_WAIT,
-            missed: 0,
+            last_queued: None,
             logged_format: false,
+            stats: Stats::default(),
         };
         d.create(0)?;
         Ok(d)
@@ -433,6 +500,8 @@ impl MediaCodecDecoder {
                     unsafe { ffi::AMediaCodec_releaseOutputBuffer(p, r as usize, false) };
                     continue;
                 }
+                self.stats
+                    .out(info.presentationTimeUs.max(0) as u64, &self.backend);
                 if let Some((old, _)) = latest.replace((r as usize, info)) {
                     unsafe { ffi::AMediaCodec_releaseOutputBuffer(p, old, false) };
                 }
@@ -540,6 +609,15 @@ impl Decoder for MediaCodecDecoder {
             Prepared::Skip => return Ok(Vec::new()),
             Prepared::Feed(p) => p,
         };
+        // Declare "no reordering" in H.264 SPSs that don't, so the decoder outputs
+        // each picture immediately (scrcpy streams have no B-frames).
+        let payload = match (self.codec, key) {
+            (Codec::H264, true) => match sps::h264_low_latency(&payload) {
+                Some(fixed) => std::borrow::Cow::Owned(fixed),
+                None => payload,
+            },
+            _ => payload,
+        };
         if key {
             let parsed = sps::parse(self.codec, &payload);
             let want = parsed.or(self.configured).unwrap_or(StreamInfo {
@@ -600,28 +678,14 @@ impl Decoder for MediaCodecDecoder {
         }
         self.stream.fed();
         self.pending += 1;
-        let wait = if self.missed >= PIPELINED_AFTER {
-            Duration::ZERO
-        } else {
-            self.wait
-        };
-        let frame = match self.drain(wait) {
+        self.stats.queued(pts);
+        self.last_queued = Some(Instant::now());
+        // Pictures that are ready now; later ones come from `poll` (the worker polls while
+        // `has_pending_output`), so nothing waits here.
+        let frame = match self.drain(Duration::ZERO) {
             Ok(f) => f,
             Err(e) => return Err(self.fail(e)),
         };
-        if wait > Duration::ZERO {
-            if frame.is_some() {
-                self.missed = 0;
-            } else if self.pending > 0 {
-                self.missed += 1;
-                if self.missed == PIPELINED_AFTER {
-                    tracing::info!(
-                        "{}: decoder holds frames back; not waiting for output",
-                        self.backend
-                    );
-                }
-            }
-        }
         Ok(frame.or(early).into_iter().collect())
     }
 
@@ -635,6 +699,19 @@ impl Decoder for MediaCodecDecoder {
 
     fn waiting_for_key_frame(&self) -> bool {
         self.stream.waiting_for_key()
+    }
+
+    fn has_pending_output(&self) -> bool {
+        self.mc.is_some()
+            && self.pending > 0
+            && self.last_queued.is_some_and(|t| t.elapsed() < POLL_FOR)
+    }
+
+    fn poll(&mut self, wait: Duration) -> Result<Vec<Frame>, DecodeError> {
+        match self.drain(wait) {
+            Ok(f) => Ok(f.into_iter().collect()),
+            Err(e) => Err(self.fail(e)),
+        }
     }
 }
 

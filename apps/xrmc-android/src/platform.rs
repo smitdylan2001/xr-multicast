@@ -95,7 +95,9 @@ fn notice(level: NoticeLevel, message: impl Into<String>) -> PlatformNotice {
 fn attach(hub: &HubHandle, fd: OwnedFd, serial: &str, product: &str) {
     let _guard = hub.runtime.enter();
     let listed = hub.registry.add_usb_fd(fd, Some(serial.to_string()));
-    log::info!("usb: {product} ({listed}) handed to the ADB client; waiting for the headset's approval");
+    log::info!(
+        "usb: {product} ({listed}) handed to the ADB client; waiting for the headset's approval"
+    );
 }
 
 impl Shared {
@@ -116,7 +118,9 @@ impl Shared {
                         ));
                         match &st.hub {
                             Some(hub) => attach(hub, fd, serial, product),
-                            None => st.queued.push((fd, serial.to_string(), product.to_string())),
+                            None => st
+                                .queued
+                                .push((fd, serial.to_string(), product.to_string())),
                         }
                     }
                     Err(e) => {
@@ -217,8 +221,9 @@ impl Platform for AndroidPlatform {
     }
 
     fn keep_screen_on(&self, on: bool) {
-        // Not `AndroidApp::set_window_flags`: it locks android-activity's state, which
-        // winit already holds while the UI runs (deadlock).
+        // Also starts/stops the foreground service that keeps headset connections alive in
+        // the background. Not `AndroidApp::set_window_flags`: it locks android-activity's
+        // state, which winit already holds while the UI runs (deadlock).
         let m = if on {
             Method::KeepScreenOn
         } else {

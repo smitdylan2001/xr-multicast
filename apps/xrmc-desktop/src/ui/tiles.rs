@@ -59,7 +59,7 @@ impl App {
                     if !backend.is_empty() && !stats_tip.is_empty() {
                         let hw = out.hardware.load(std::sync::atomic::Ordering::Relaxed);
                         stats_tip.push_str(&format!(
-                            "\nDecoder: {backend} ({})\nMenu → Video codecs: encoders vs. decoders",
+                            "\nDecoder: {backend} ({})\nTap for the video codecs: headset encoders vs. this receiver's decoders",
                             if hw { "hardware" } else { "software" }
                         ));
                     }
@@ -272,9 +272,15 @@ impl App {
             );
             body_painter.rect_filled(r, 6.0, Color32::from_black_alpha(150));
             body_painter.galley(r.min + vec2(6.0, 3.0), galley, Color32::WHITE);
-            let tip_resp = ui.interact(r, id.with("stats"), Sense::hover());
-            if !v.stats_tip.is_empty() {
-                tip_resp.on_hover_text(&v.stats_tip);
+            let tip_resp = ui.interact(r, id.with("stats"), Sense::click());
+            let tip_resp = if v.stats_tip.is_empty() {
+                tip_resp
+            } else {
+                tip_resp.on_hover_text(&v.stats_tip)
+            };
+            if tip_resp.clicked() {
+                self.cmds
+                    .push(Cmd::Open(Dialog::codecs(Some(v.id.clone()))));
             }
         }
 
@@ -705,10 +711,18 @@ impl App {
                 let font = theme::font(12.5);
                 let text = widgets::fit_text(ui.painter(), &v.stats, font.clone(), w - 8.0);
                 let r = ui.add(
-                    egui::Label::new(RichText::new(text).font(font).color(theme::MUTED)).truncate(),
+                    egui::Label::new(RichText::new(text).font(font).color(theme::MUTED))
+                        .truncate()
+                        .sense(Sense::click()),
                 );
-                if !v.stats_tip.is_empty() {
-                    r.on_hover_text(&v.stats_tip);
+                let r = if v.stats_tip.is_empty() {
+                    r
+                } else {
+                    r.on_hover_text(&v.stats_tip)
+                };
+                if r.clicked() {
+                    self.cmds
+                        .push(Cmd::Open(Dialog::codecs(Some(v.id.clone()))));
                 }
             }
         });

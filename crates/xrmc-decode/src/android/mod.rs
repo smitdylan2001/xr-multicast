@@ -1,5 +1,6 @@
 //! Android: hardware (and platform software) decoding with the NDK's
-//! `AMediaCodec`, in ByteBuffer mode: decoded YUV is copied into a [`crate::Frame`].
+//! `AMediaCodec`, in ByteBuffer mode: decoded YUV is copied into a [`crate::Frame`]
+//! (NV12 / I420 for 8-bit, P010 for 10-bit).
 //!
 //! The NDK has no codec list before API 36, so the app passes the decoders it
 //! found with Java's `MediaCodecList` to [`set_codec_list`] at startup (name,

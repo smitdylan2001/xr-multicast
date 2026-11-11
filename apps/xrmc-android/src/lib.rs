@@ -36,6 +36,8 @@ struct Launch {
     cast_on_start: bool,
     show: Option<String>,
     ui_scale: Option<f32>,
+    /// MediaCodec decoder names to prefer (`--es decoder c2.android.avc.decoder`).
+    decoder: Option<String>,
 }
 
 fn parse_launch(s: &str) -> Launch {
@@ -56,6 +58,7 @@ fn parse_launch(s: &str) -> Launch {
             "castonstart" => l.cast_on_start = v == "true" || v == "1",
             "show" if !v.is_empty() => l.show = Some(v.to_string()),
             "uiscale" => l.ui_scale = v.parse().ok(),
+            "decoder" if !v.is_empty() => l.decoder = Some(v.to_string()),
             _ => {}
         }
     }
@@ -74,11 +77,7 @@ fn extract_scrcpy_server(app: &AndroidApp, dir: &Path) -> Option<PathBuf> {
         log::error!("cannot write {}: {e}", path.display());
         return None;
     }
-    log::info!(
-        "scrcpy-server {} ({} bytes)",
-        path.display(),
-        bytes.len()
-    );
+    log::info!("scrcpy-server {} ({} bytes)", path.display(), bytes.len());
     Some(path)
 }
 
@@ -112,7 +111,11 @@ fn android_main(app: AndroidApp) {
 
     let java = jni_bridge::Java::new(&app);
     let platform = Arc::new(AndroidPlatform::new(app.clone(), java));
-    log::info!("XR MultiCast {} on {}", env!("CARGO_PKG_VERSION"), platform.info());
+    log::info!(
+        "XR MultiCast {} on {}",
+        env!("CARGO_PKG_VERSION"),
+        platform.info()
+    );
 
     // Decoders this device has (Java MediaCodecList), before anything asks for capabilities.
     match jni_bridge::call_string(java, jni_bridge::Method::CodecList) {
@@ -140,6 +143,10 @@ fn android_main(app: AndroidApp) {
         .map(|s| parse_launch(&s))
         .unwrap_or_default();
     log::info!("launch options: {launch:?}");
+    if let Some(d) = &launch.decoder {
+        // SAFETY: no other threads read the environment yet (the hub and decoders start later).
+        unsafe { std::env::set_var("XRMC_MEDIACODEC_DECODER", d) };
+    }
 
     let data = app
         .internal_data_path()
@@ -190,7 +197,8 @@ fn android_main(app: AndroidApp) {
     };
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut native.wgpu_options.wgpu_setup {
         // Vulkan, with OpenGL ES as the fallback on devices without a usable Vulkan driver.
-        c.instance_descriptor.backends = eframe::wgpu::Backends::VULKAN | eframe::wgpu::Backends::GL;
+        c.instance_descriptor.backends =
+            eframe::wgpu::Backends::VULKAN | eframe::wgpu::Backends::GL;
     }
     xrmc_render::request_optional_features(&mut native.wgpu_options.wgpu_setup);
     let result = eframe::run_native(

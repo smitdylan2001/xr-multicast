@@ -208,7 +208,7 @@ fn last_index(p: &PlaneLayout, x0: usize, y0: usize, w: usize, h: usize, bytes: 
     p.offset + (y0 + h - 1) * p.row_inc + (x0 + w - 1) * p.col_inc + bytes
 }
 
-/// Copy the visible part of `buf` into a frame: NV12 / I420 for 8-bit, I420P10 for 10-bit.
+/// Copy the visible part of `buf` into a frame: NV12 / I420 for 8-bit, P010 (or I420P10) for 10-bit.
 pub fn to_frame(buf: &[u8], l: &Layout, crop: Crop, color: ColorInfo, pts: u64) -> Option<Frame> {
     let (w, h) = (crop.width as usize, crop.height as usize);
     if w == 0 || h == 0 || crop.left + crop.width > l.width || crop.top + crop.height > l.height {
@@ -275,7 +275,36 @@ pub fn to_frame(buf: &[u8], l: &Layout, crop: Crop, color: ColorInfo, pts: u64) 
             pts,
         });
     }
-    // 16-bit containers → I420P10 (little-endian u16, 0..1023).
+    // P010 (what MediaCodec gives for 10-bit): copy as is (values in the high 10 bits).
+    let p010 = l.msb_aligned
+        && l.bit_depth == 10
+        && py.col_inc == 2
+        && pu.col_inc == 4
+        && pv.col_inc == 4
+        && pv.offset == pu.offset + 2
+        && pu.row_inc == pv.row_inc;
+    if p010 {
+        let rows = |p: &PlaneLayout, x: usize, y: usize, ph: usize, bytes: usize| {
+            let mut out = Vec::with_capacity(bytes * ph);
+            for r in 0..ph {
+                let s = p.offset + (y + r) * p.row_inc + x * p.col_inc;
+                out.extend_from_slice(&buf[s..s + bytes]);
+            }
+            out
+        };
+        return Some(Frame {
+            width: w as u32,
+            height: h as u32,
+            format: PixelFormat::P010,
+            color,
+            planes: vec![
+                plane(rows(&py, x0, y0, h, 2 * w), 2 * w, w, h),
+                plane(rows(&pu, cx0, cy0, ch, 4 * cw), 4 * cw, cw, ch),
+            ],
+            pts,
+        });
+    }
+    // Other 16-bit layouts → I420P10 (little-endian u16, 0..1023).
     let shift = if l.msb_aligned {
         16 - u32::from(l.bit_depth)
     } else {
@@ -424,8 +453,27 @@ mod tests {
     }
 
     #[test]
-    fn p010_to_i420p10() {
+    fn p010_stays_p010() {
         let l = from_color_format(COLOR_YUV_P010, 2, 2, 4, 2).unwrap();
+        let buf: Vec<u8> = (0..12).collect();
+        let crop = Crop {
+            left: 0,
+            top: 0,
+            width: 2,
+            height: 2,
+        };
+        let f = to_frame(&buf, &l, crop, C, 0).unwrap();
+        assert_eq!(f.format, PixelFormat::P010);
+        assert_eq!(f.planes[0].data, (0..8).collect::<Vec<u8>>());
+        assert_eq!(f.planes[1].data, [8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn planar_16_bit_to_i420p10() {
+        // Planar 16-bit, MSB-aligned (as a MediaImage2 would describe it).
+        let im = image2([(0, 2, 4, 1), (8, 2, 2, 2), (10, 2, 2, 2)], 2, 2, 10, 16);
+        let mut l = from_media_image2(&im).unwrap();
+        l.msb_aligned = true;
         let s = |v: u16| (v << 6).to_le_bytes();
         let mut buf = Vec::new();
         for v in [1u16, 2, 3, 1023] {

@@ -28,7 +28,8 @@ pub enum Method {
     GoHome,
     /// `void rescanUsb()`: enumerate USB devices again.
     RescanUsb,
-    /// `void keepScreenOn()` / `keepScreenOff()`: `FLAG_KEEP_SCREEN_ON`.
+    /// `void keepScreenOn()` / `keepScreenOff()`: `FLAG_KEEP_SCREEN_ON` plus the casting
+    /// foreground service (keeps connections alive when the app is in the background).
     KeepScreenOn,
     KeepScreenOff,
 }
@@ -78,15 +79,15 @@ pub fn call_string(java: Java, m: Method) -> Result<String, String> {
         let sig = jni_sig!("()Ljava/lang/String;");
         let v = match m {
             Method::CodecList => env.call_method(activity, jni_str!("codecList"), sig, &[]),
-            Method::LaunchOptions => {
-                env.call_method(activity, jni_str!("launchOptions"), sig, &[])
-            }
+            Method::LaunchOptions => env.call_method(activity, jni_str!("launchOptions"), sig, &[]),
             Method::PlatformInfo => env.call_method(activity, jni_str!("platformInfo"), sig, &[]),
             Method::PollEvents => env.call_method(activity, jni_str!("pollEvents"), sig, &[]),
-            _ => return Err(jni::errors::Error::MethodNotFound {
-                name: format!("{m:?}"),
-                sig: "()Ljava/lang/String;".into(),
-            }),
+            _ => {
+                return Err(jni::errors::Error::MethodNotFound {
+                    name: format!("{m:?}"),
+                    sig: "()Ljava/lang/String;".into(),
+                });
+            }
         }?
         .l()?;
         if v.is_null() {
@@ -107,9 +108,7 @@ pub fn call_void(java: Java, m: Method) -> Result<(), String> {
             Method::GoHome => env.call_method(activity, jni_str!("goHome"), sig, &[]),
             Method::RescanUsb => env.call_method(activity, jni_str!("rescanUsb"), sig, &[]),
             Method::KeepScreenOn => env.call_method(activity, jni_str!("keepScreenOn"), sig, &[]),
-            Method::KeepScreenOff => {
-                env.call_method(activity, jni_str!("keepScreenOff"), sig, &[])
-            }
+            Method::KeepScreenOff => env.call_method(activity, jni_str!("keepScreenOff"), sig, &[]),
             _ => {
                 return Err(jni::errors::Error::MethodNotFound {
                     name: format!("{m:?}"),

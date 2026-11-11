@@ -52,6 +52,7 @@ public class MainActivity extends GameActivity {
     private final Set<String> asked = ConcurrentHashMap.newKeySet();
     private WifiManager.MulticastLock multicast;
     private boolean receiversRegistered;
+    private boolean askedNotifications;
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
         @Override
@@ -137,6 +138,7 @@ public class MainActivity extends GameActivity {
         for (UsbDeviceConnection c : open.values()) c.close();
         open.clear();
         multicastOff();
+        stopService(new Intent(this, CastService.class));
         super.onDestroy();
     }
 
@@ -280,12 +282,13 @@ public class MainActivity extends GameActivity {
     }
 
     /** {@code key=value} lines from the launching intent (testing and kiosk setups). */
+    @SuppressWarnings("deprecation") // Bundle.get: the extras have mixed types.
     public String launchOptions() {
         Intent i = getIntent();
         Bundle b = i != null ? i.getExtras() : null;
         if (b == null) return "";
         StringBuilder sb = new StringBuilder();
-        for (String k : new String[] {"connect", "noverify", "demo", "castonstart", "show", "uiscale"}) {
+        for (String k : new String[] {"connect", "noverify", "demo", "castonstart", "show", "uiscale", "decoder"}) {
             Object v = b.get(k);
             if (v != null) sb.append(k).append('=').append(v).append('\n');
         }
@@ -320,12 +323,29 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    /** Streams are shown: keep the screen on and the process in the foreground (CastService). */
     public void keepScreenOn() {
-        runOnUiThread(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        runOnUiThread(() -> {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                    && !askedNotifications) {
+                askedNotifications = true;
+                requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+            try {
+                startForegroundService(new Intent(this, CastService.class));
+            } catch (RuntimeException e) {
+                Log.w(TAG, "could not start the casting service", e);
+            }
+        });
     }
 
+    /** No streams any more. */
     public void keepScreenOff() {
-        runOnUiThread(() -> getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        runOnUiThread(() -> {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            stopService(new Intent(this, CastService.class));
+        });
     }
 
     /** Back button with nothing left to close: leave the app running in the background. */

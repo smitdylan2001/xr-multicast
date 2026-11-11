@@ -207,6 +207,18 @@ pub trait Decoder: Send {
     fn waiting_for_key_frame(&self) -> bool {
         false
     }
+
+    /// Whether packets were fed whose pictures have not come out yet
+    /// (asynchronous decoders such as MediaCodec). The caller then calls
+    /// [`Decoder::poll`] while it waits for the next packet.
+    fn has_pending_output(&self) -> bool {
+        false
+    }
+
+    /// Pictures that finished decoding since the last call, waiting at most `wait`.
+    fn poll(&mut self, _wait: std::time::Duration) -> Result<Vec<Frame>, DecodeError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Which decoder implementation [`create_with`] should use.
