@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "XR MultiCast native desktop app (Windows, macOS, Linux incl. single-board computers with touchscreens)."
+description = "XR MultiCast native app: the shared egui UI library (desktop and Android) and the desktop binary (Windows, macOS, Linux incl. single-board computers with touchscreens)."
 
 [lib]
 name = "xrmc_desktop"
@@ -31,4 +31,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 clap = { version = "4", features = ["derive"] }
 png = "0.18"
 pollster = "1"
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
+
+# Desktop windowing (the Android app enables eframe's `android-game-activity` instead).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "wayland", "x11"] }

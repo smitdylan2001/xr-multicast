@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB devices that open XR MultiCast when plugged in (and get USB permission
+     once the user ticks "Always open"). Any device with an ADB interface
+     (class 0xff, subclass 0x42, protocol 0x01) matches the first entry; Android
+     matches it against interface classes too, but some vendor builds only check
+     the device class, so known XR vendors are listed as well. The app still
+     checks for the ADB interface in code (MainActivity.hasAdbInterface). -->
+<resources>
+    <usb-device class="255" subclass="66" protocol="1" />
+    <!-- Meta / Oculus -->
+    <usb-device vendor-id="10291" />
+    <!-- PICO -->
+    <usb-device vendor-id="11584" />
+    <!-- HTC VIVE -->
+    <usb-device vendor-id="2996" />
+    <!-- Google (Android XR and generic ADB) -->
+    <usb-device vendor-id="6353" />
+    <!-- Samsung (Galaxy XR) -->
+    <usb-device vendor-id="1256" />
+    <!-- Qualcomm reference designs (several XR headsets, incl. Play For Dream / YVR builds) -->
+    <usb-device vendor-id="1478" />
+</resources>

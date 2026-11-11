@@ -1,0 +1,9 @@
+/android/app/src/main/jniLibs
+/android/app/src/main/assets
+/android/app/src/main/res/mipmap-xxxhdpi
+/android/app/build
+/android/build
+/android/.gradle
+/android/.kotlin
+/android/local.properties
+/build

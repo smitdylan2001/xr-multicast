@@ -96,6 +96,9 @@ fn system_fonts() -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         "C:\\Windows\\Fonts\\segoeui.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/Library/Fonts/Arial.ttf",
+        // Android (static Roboto; the variable Roboto-Regular.ttf only gives the default weight).
+        "/system/fonts/RobotoStatic-Regular.ttf",
+        "/system/fonts/Roboto-Regular.ttf",
     ];
     let bold: &[&str] = &[
         "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
@@ -106,6 +109,7 @@ fn system_fonts() -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         "C:\\Windows\\Fonts\\segoeuib.ttf",
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/Library/Fonts/Arial Bold.ttf",
+        "/system/fonts/DroidSans-Bold.ttf",
     ];
     let load = |list: &[&str]| list.iter().find_map(|p| std::fs::read(p).ok());
     (load(regular), load(bold))
@@ -140,6 +144,7 @@ pub fn install_fonts(ctx: &egui::Context) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "C:\\Windows\\Fonts\\seguisym.ttf",
+        "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
         "/System/Library/Fonts/Apple Symbols.ttf",
     ] {
         if let Ok(d) = std::fs::read(p) {

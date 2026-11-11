@@ -1,0 +1,34 @@
+[package]
+name = "xrmc-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "XR MultiCast standalone Android app (phone/tablet hub): the shared egui UI on GameActivity + Vulkan, USB host, Wi-Fi ADB and MediaCodec decoding."
+publish = false
+
+# Loaded by GameActivity as libxrmc_android.so (see android/app/src/main/AndroidManifest.xml).
+# On other targets this crate is empty, so `cargo build --workspace` still works.
+[lib]
+name = "xrmc_android"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[target.'cfg(target_os = "android")'.dependencies]
+xrmc-desktop = { path = "../xrmc-desktop" }
+xrmc-adb.workspace = true
+xrmc-core.workspace = true
+xrmc-hub.workspace = true
+xrmc-decode = { workspace = true, features = ["openh264-source"] }
+xrmc-render.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+# Core logs go to logcat through `log` (no tracing subscriber is installed on Android).
+tracing = { workspace = true, features = ["log"] }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "android-game-activity"] }
+# Must match the GameActivity AAR (androidx.games:games-activity:4.4.0) in android/app/build.gradle.kts.
+android-activity = { version = "0.6.1", features = ["game-activity"] }
+jni = "0.22.4"
+android_logger = { version = "0.15.1", default-features = false }
+log = "0.4.35"

@@ -160,6 +160,7 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "num_enum",
+ "simd_cesu8",
  "thiserror 2.0.21",
 ]
 
@@ -168,6 +169,23 @@ name = "android-properties"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
+
+[[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbb4e440d04be07da1f1bf44fb4495ebd58669372fe0cffa6e48595ac5bd88a3"
+dependencies = [
+ "android_log-sys",
+ "env_filter",
+ "log",
+]
 
 [[package]]
 name = "android_system_properties"
@@ -1147,6 +1165,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -3554,6 +3581,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -4513,6 +4541,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrmc-android"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "android_logger",
+ "eframe",
+ "jni",
+ "log",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "xrmc-adb",
+ "xrmc-core",
+ "xrmc-decode",
+ "xrmc-desktop",
+ "xrmc-hub",
+ "xrmc-render",
+]
+
+[[package]]
 name = "xrmc-cli"
 version = "0.1.0"
 dependencies = [
@@ -4548,6 +4596,7 @@ name = "xrmc-decode"
 version = "0.1.0"
 dependencies = [
  "libloading",
+ "ndk-sys",
  "openh264",
  "openh264-sys2",
  "thiserror 2.0.21",
