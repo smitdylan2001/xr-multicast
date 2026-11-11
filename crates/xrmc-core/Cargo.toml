@@ -1,5 +1,6 @@
 [package]
 name = "xrmc-core"
+description = "Platform-independent core of XR MultiCast: headset brands, device and stream management, codec/resolution policy and the settings store."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,10 +9,16 @@ authors.workspace = true
 
 [dependencies]
 xrmc-adb.workspace = true
-xrmc-scrcpy.workspace = true
-xrmc-media.workspace = true
 tokio.workspace = true
+bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+regex = "1.11"
+if-addrs = "0.15"
+mdns-sd = { version = "0.21", default-features = false, features = ["async"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3.20"

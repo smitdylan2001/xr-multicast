@@ -1,0 +1,236 @@
+{
+  "$comment": "Generated from src/shared/brands.js by crates/xrmc-core/scripts/export-brands.js. Do not edit by hand.",
+  "baseCorrection": {
+    "layout": "auto",
+    "quadRow": "top",
+    "eye": "left",
+    "k1": -0.2,
+    "k2": 0.03,
+    "zoom": 1.4,
+    "centerX": 0,
+    "centerY": 0,
+    "chromaR": 1,
+    "chromaB": 1,
+    "rotation": "auto",
+    "autoRotation": 0,
+    "flipH": false,
+    "flipV": false,
+    "outputAspect": "16:9"
+  },
+  "brands": [
+    {
+      "id": "meta",
+      "name": "Meta",
+      "family": "Meta Quest",
+      "color": "#1877F2",
+      "models": {
+        "monterey": "Quest",
+        "hollywood": "Quest 2",
+        "seacliff": "Quest Pro",
+        "eureka": "Quest 3",
+        "panther": "Quest 3S"
+      },
+      "correction": {
+        "layout": "auto",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": -0.22,
+        "k2": 0.04,
+        "zoom": 1.45,
+        "centerX": 0.04,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "16:9"
+      },
+      "setup": [
+        "Create/sign in to a Meta developer account (developers.meta.com) and join or create an organization.",
+        "In the Meta Horizon phone app: Menu → Devices → select the headset → Headset settings → Developer mode → On.",
+        "Reboot the headset.",
+        "Windows only: install the \"Oculus ADB Drivers\" from developers.meta.com/horizon/downloads.",
+        "Plug the headset in with a USB-C data cable, put it on, and accept \"Allow USB debugging\" (tick \"Always allow from this computer\")."
+      ],
+      "match": "\\b(oculus|meta)\\b|quest|hollywood|eureka|panther|seacliff|monterey",
+      "matchFlags": "i",
+      "variants": []
+    },
+    {
+      "id": "pico",
+      "name": "PICO",
+      "family": "PICO",
+      "color": "#00B8A9",
+      "models": {
+        "a8110": "PICO 4",
+        "a9210": "PICO 4 Ultra"
+      },
+      "correction": {
+        "layout": "auto",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": -0.2,
+        "k2": 0.03,
+        "zoom": 1.4,
+        "centerX": 0,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "16:9"
+      },
+      "setup": [
+        "On the headset: Settings → General → About → tap \"Software Version\" 7 times until Developer options appear.",
+        "Settings → Developer → enable \"USB Debugging\".",
+        "Plug in via USB-C, put the headset on and accept the USB debugging prompt (tick \"Always allow\")."
+      ],
+      "match": "pico|bytedance",
+      "matchFlags": "i",
+      "variants": []
+    },
+    {
+      "id": "yvr",
+      "name": "Play For Dream",
+      "family": "Play For Dream / YVR",
+      "color": "#8B5CF6",
+      "models": {},
+      "correction": {
+        "layout": "auto",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": -0.2,
+        "k2": 0.03,
+        "zoom": 1.4,
+        "centerX": 0,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "16:9"
+      },
+      "setup": [
+        "On the headset: Settings → About → tap the build / version number 7 times to unlock Developer options.",
+        "Open Developer options and enable \"USB debugging\".",
+        "Plug in via USB-C, put the headset on and accept the USB debugging prompt (tick \"Always allow\")."
+      ],
+      "match": "\\byvr\\b|play\\s*for\\s*dream|playfordream|pfdm|dreamsmart",
+      "matchFlags": "i",
+      "variants": [
+        {
+          "id": "pfd-mr",
+          "model": "MR",
+          "correction": {
+            "autoRotation": 90
+          },
+          "match": "pfdm|yvr_d3",
+          "matchFlags": "i"
+        }
+      ]
+    },
+    {
+      "id": "htc",
+      "name": "HTC VIVE",
+      "family": "HTC VIVE (Focus / XR Elite)",
+      "color": "#00A3E0",
+      "models": {},
+      "correction": {
+        "layout": "auto",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": -0.21,
+        "k2": 0.035,
+        "zoom": 1.4,
+        "centerX": 0,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "16:9"
+      },
+      "setup": [
+        "On the headset: Settings → Advanced (or About) → tap \"Build number\" / version 7 times to unlock Developer options.",
+        "Open Developer options and enable \"USB debugging\".",
+        "Plug in via USB-C, put the headset on and accept the USB debugging prompt (tick \"Always allow\")."
+      ],
+      "match": "\\bhtc\\b|vive",
+      "matchFlags": "i",
+      "variants": []
+    },
+    {
+      "id": "androidxr",
+      "name": "Android XR",
+      "family": "Android XR (e.g. Galaxy XR)",
+      "color": "#34A853",
+      "models": {
+        "sm-i610": "Galaxy XR"
+      },
+      "correction": {
+        "layout": "auto",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": -0.18,
+        "k2": 0.025,
+        "zoom": 1.35,
+        "centerX": 0,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "16:9"
+      },
+      "setup": [
+        "On the headset: Settings → About → Software information → tap \"Build number\" 7 times.",
+        "Settings → Developer options → enable \"USB debugging\".",
+        "Plug in via USB-C, put the headset on and accept the USB debugging prompt (tick \"Always allow\")."
+      ],
+      "match": "galaxy\\s*xr|sm-i61\\d|moohan|android\\s*xr",
+      "matchFlags": "i",
+      "variants": []
+    },
+    {
+      "id": "android",
+      "name": "Android",
+      "family": "Other Android device",
+      "color": "#6B7280",
+      "models": {},
+      "correction": {
+        "layout": "mono",
+        "quadRow": "top",
+        "eye": "left",
+        "k1": 0,
+        "k2": 0,
+        "zoom": 1,
+        "centerX": 0,
+        "centerY": 0,
+        "chromaR": 1,
+        "chromaB": 1,
+        "rotation": "auto",
+        "autoRotation": 0,
+        "flipH": false,
+        "flipV": false,
+        "outputAspect": "eye"
+      },
+      "setup": [
+        "Settings → About → tap \"Build number\" 7 times, then enable Developer options → USB debugging.",
+        "Plug in via USB and accept the USB debugging prompt."
+      ],
+      "match": null,
+      "matchFlags": null,
+      "variants": []
+    }
+  ]
+}
