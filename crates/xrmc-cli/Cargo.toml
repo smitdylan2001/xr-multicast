@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+description = "Command-line tool to exercise the XR MultiCast core without a UI."
 
 [[bin]]
 name = "xrmc"
@@ -15,4 +16,7 @@ xrmc-adb.workspace = true
 xrmc-scrcpy.workspace = true
 xrmc-media.workspace = true
 xrmc-core.workspace = true
-tokio.workspace = true
+xrmc-hub.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+serde_json.workspace = true
+clap = { version = "4", features = ["derive", "env"] }

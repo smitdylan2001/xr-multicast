@@ -15,6 +15,7 @@ xrmc-adb = { path = "crates/xrmc-adb" }
 xrmc-scrcpy = { path = "crates/xrmc-scrcpy" }
 xrmc-media = { path = "crates/xrmc-media" }
 xrmc-core = { path = "crates/xrmc-core" }
+xrmc-hub = { path = "crates/xrmc-hub" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
 bytes = "1"

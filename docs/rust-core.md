@@ -19,7 +19,8 @@ The Electron app on `main` stays the reference implementation until the native a
 | `xrmc-media` | Bitstream parsing (H.264/H.265/AV1 codec strings, bit depth, sizes), fMP4 muxing for browser viewers | No |
 | `xrmc-scrcpy` | scrcpy-server v5.0.1 launch arguments, protocol demuxer, encoder list, session over any `AdbDevice` (connects through ADB `OPEN localabstract:`; no port forwarding) | No |
 | `xrmc-core` | Brands and model variants (data shared with the Electron app as JSON), layout detection, resolution matching, codec/10-bit policy, settings store compatible with the Electron store file, device-info parsing, LAN/mDNS discovery, device and stream managers with an event channel | No |
-| `xrmc-cli` | `xrmc` command-line tool to exercise the core without a UI (list, identify, verify, stream to file) | No |
+| `xrmc-hub` | Wires the core to the real ADB client and scrcpy sessions: `Hub::open()` gives device and stream managers backed by real devices, plus one event channel. Every app builds on this. | No |
+| `xrmc-cli` | `xrmc` command-line tool to exercise the core without a UI: `devices`, `connect`, `info`, `encoders`, `stream`, `hub` | No |
 
 These come next, after the core is proven:
 
@@ -54,3 +55,40 @@ cargo run -p xrmc-cli -- --help
 ```
 
 The Android SDK/NDK/JDK come from the local Unity install (read-only) plus `~/Android/Sdk` for the emulator. See the UI choice document for the exact environment.
+
+## Status (November 2026)
+
+- **Tests:** 285 tests pass across the workspace. Clippy (`-D warnings`) is clean, and `cargo check` passes for Android, Windows and macOS.
+- **End to end against a real Android 15 emulator, pure Rust with no Google `adb` involved:**
+  - Identify (getprop parsing, panel size, battery, IP) over direct TCP.
+  - scrcpy encoder listing.
+  - H.264 streaming over direct TCP (connects in ~0.2 s, first frame after ~0.5 s).
+  - H.265 streaming through the adb server.
+  - Both recordings decode to the correct picture with an independent decoder (GStreamer).
+  - `xrmc hub`: the device manager identifies the device and the stream manager casts it (codec policy, quality cap, session lifecycle).
+- **Not yet verified on hardware:**
+  - Direct USB to real headsets (unit-tested; on desktop the adb server usually owns USB, so the registry falls back to it).
+  - The RSA auth prompt on a real device (the emulator has auth disabled).
+  - Android 11+ wireless-debugging TLS pairing (not implemented; reported as an error).
+
+### Try it
+
+```bash
+export PATH=$HOME/.cargo/bin:$PATH
+export XRMC_SCRCPY_SERVER=/path/to/scrcpy-server        # v5.0.1 (npm run setup on main downloads it)
+cargo run -p xrmc-cli -- devices
+cargo run -p xrmc-cli -- --no-server info 192.168.1.50:5555
+cargo run -p xrmc-cli -- stream <serial> --seconds 5 --out cap.h264
+cargo run -p xrmc-cli -- hub --seconds 20 --cast <hardware-serial>
+```
+
+## Next steps
+
+1. **Android app (egui + Vulkan):**
+   - Gradle/GameActivity shell with USB host permission and the file descriptor handed to `AdbRegistry::add_usb_fd`, plus Android mDNS and a multicast lock.
+   - Hardware decoding to `AHardwareBuffer`, imported into the wgpu/Vulkan compositor.
+   - Verify, add and discover devices, and cast up to 10+ headsets.
+2. **`xrmc-render`:** port the lens-correction shader and compositor to WGSL/wgpu.
+3. **`xrmc-decode` per platform:** Android first, then VA-API, Media Foundation and VideoToolbox.
+4. **`xrmc-remote`:** remote API server compatible with the existing tablet dashboard and hardware tools.
+5. **Desktop app on egui:** reaches parity with the Electron app, then replaces it.
