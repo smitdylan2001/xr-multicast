@@ -491,6 +491,7 @@ class RemoteServer extends EventEmitter {
     clearTimeout(c.authTimer);
     if (c.support) this.streams.setViewerSupport(c.id, null);
     c.support = null;
+    if (this.streams.clearViewer) this.streams.clearViewer(`remote:${c.id}`);
     this.emitStatus();
   }
 

@@ -636,6 +636,18 @@ select option {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* Keeps the compositor canvas' stacking inside the stage. */
+  isolation: isolate;
+}
+
+/* Shared video surface: transparent except inside tile video areas. */
+.compositor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .empty {
@@ -780,16 +792,9 @@ select option {
   background: #000;
 }
 
-.tile-body canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
 .video-label {
   position: absolute;
+  z-index: 2;
   left: 10px;
   top: 10px;
   display: flex;
@@ -817,6 +822,7 @@ select option {
 
 .tile-status {
   position: absolute;
+  z-index: 2;
   inset: 0;
   display: flex;
   flex-direction: column;
@@ -890,17 +896,40 @@ select option {
   color: #fff;
 }
 
-.tile:fullscreen {
+/* Changing resolution: the last frame stays visible (blurred by the compositor) under the message. */
+.tile-status.resizing {
+  background: transparent;
+  text-shadow: 0 1px 6px #000;
+}
+
+/* Fullscreen = whole window fullscreen with one stream focused (video lives in the shared canvas). */
+body.app-full .topbar,
+body.app-full .sidebar,
+body.app-full .sidebar-backdrop,
+body.app-full .statusbar {
+  display: none !important;
+}
+
+body.app-full .grid {
+  padding: 0;
+}
+
+body.app-full .tile {
   border: 0;
   border-radius: 0;
 }
 
-.tile:fullscreen .video-label b {
+body.app-full .video-label b {
   font-size: 22px;
 }
 
-.tile:fullscreen .video-label span {
+body.app-full .video-label span {
   font-size: 14px;
+}
+
+body.pseudo-full {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: #000;
 }
 
 /* ------------------------------------------------------------ drawer */
@@ -1601,22 +1630,6 @@ html.remote .statusbar {
   display: none;
 }
 
-.tile:-webkit-full-screen {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-}
-
-.tile.pseudo-full {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  border: 0;
-  border-radius: 0;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  background: #000;
-}
 
 /* ------------------------------------------------------- touch screens */
 

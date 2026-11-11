@@ -1,6 +1,6 @@
 'use strict';
 
-/* global xr, LensRenderer, LayoutDetect, StreamDecoder, MseDecoder, icon, hydrateIcons */
+/* global xr, Compositor, LayoutDetect, StreamDecoder, MseDecoder, icon, hydrateIcons */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -146,7 +146,6 @@ class Tile {
         <span class="live-badge">LIVE</span>
       </header>
       <div class="tile-body">
-        <canvas></canvas>
         <div class="video-label"></div>
         <div class="tile-status"></div>
       </div>
@@ -162,16 +161,20 @@ class Tile {
         <button class="btn icon ghost danger" data-tile="stop" title="Stop casting"><i data-icon="stop"></i></button>
       </footer>`;
     hydrateIcons(this.el);
-    this.canvas = $('canvas', this.el);
+    this.body = $('.tile-body', this.el);
     this.statusEl = $('.tile-status', this.el);
     this.statsEl = $('.tile-stats', this.el);
 
-    try {
-      this.renderer = new LensRenderer(this.canvas);
-    } catch (e) {
+    // Video is drawn by the window-wide compositor; each tile only owns a texture there.
+    if (S.compositor) this.renderer = S.compositor.createSurface();
+    else {
       this.renderer = null;
-      this.fatal = e.message;
+      this.fatal = S.compositorError || 'WebGL2 is not available on this system.';
     }
+    // Last known panel layout/size for this headset: right resolution and layout from the first frame.
+    const mem = viewMemory(id);
+    this.grid = mem.grid || null;
+    this.memFrame = mem.frame || null;
     if (!StreamDecoder.supported && !(window.MseDecoder && MseDecoder.supported)) this.fatal = 'This browser cannot decode the video (no WebCodecs or Media Source Extensions).';
     this.decoder = this.makeDecoder();
 
@@ -219,7 +222,7 @@ class Tile {
       if (a === 'stop') stopStream(this.id);
       else if (a === 'calibrate') openCalibration(this.id);
       else if (a === 'rotate') this.rotate();
-      else if (a === 'fullscreen') toggleFullscreen(this.el);
+      else if (a === 'fullscreen') toggleAppFullscreen(this.id);
       else if (a === 'snapshot') this.snapshot();
       else if (a === 'retry') startStream(this.id);
       else if (a === 'close') removeTile(this.id);
@@ -245,12 +248,14 @@ class Tile {
   resolve(p) {
     const r = this.renderer;
     const st = S.streams.get(this.id);
+    const frameW = r && r.frameW ? r.frameW : this.memFrame ? this.memFrame.w : 0;
+    const frameH = r && r.frameW ? r.frameH : this.memFrame ? this.memFrame.h : 0;
     return LayoutDetect.resolveView({
       layout: p.layout,
       rotation: p.rotation,
       autoRotation: p.autoRotation,
-      frameW: r ? r.frameW : 0,
-      frameH: r ? r.frameH : 0,
+      frameW,
+      frameH,
       grid: this.grid,
       singleEye: !!(st && st.singleEye),
     });
@@ -269,6 +274,7 @@ class Tile {
     }
     this.dirty = true;
     this.updateStats();
+    scheduleViewReport();
   }
 
   /** Detect the panel's view grid from the video: on the first frames, then every few seconds. */
@@ -294,6 +300,8 @@ class Tile {
         this.grid = { cols: g.cols, rows: g.rows };
         this.dirty = true;
         this.updateStats();
+        rememberView(this.id, { grid: this.grid, frame: { w: this.renderer.frameW, h: this.renderer.frameH } });
+        scheduleViewReport();
         if (S.calib && S.calib.id === this.id) syncCalibrationAuto();
       }
       this.gridCandidate = key;
@@ -337,21 +345,11 @@ class Tile {
     if (this.pendingFrame) this.pendingFrame.close();
     this.pendingFrame = frame;
     this.frames++;
-    // requestAnimationFrame is throttled when the window is occluded (e.g. while
-    // captured by OBS behind other windows); keep rendering with a timer fallback.
-    if (!this.fallbackTimer) {
-      this.fallbackTimer = setTimeout(() => {
-        this.fallbackTimer = null;
-        if (this.pendingFrame && !this.el.hidden) this.tick(performance.now());
-      }, 50);
-    }
+    scheduleRenderFallback();
   }
 
+  /** Stats, frame upload and layout detection. Drawing happens in renderAll(). */
   tick(now) {
-    if (this.fallbackTimer) {
-      clearTimeout(this.fallbackTimer);
-      this.fallbackTimer = null;
-    }
     const dt = now - this.lastStat;
     if (dt >= 1000) {
       this.fps = (this.frames * 1000) / dt;
@@ -375,15 +373,17 @@ class Tile {
       this.dirty = true;
       if (!this.hasVideo) {
         this.hasVideo = true;
+        // First picture at the new resolution: drop the blur.
+        this.resizing = false;
         this.refresh();
+        const r = this.renderer;
+        if (r.frameW && (!this.memFrame || this.memFrame.w * r.frameH !== this.memFrame.h * r.frameW)) {
+          this.memFrame = { w: r.frameW, h: r.frameH };
+          rememberView(this.id, { frame: this.memFrame });
+          scheduleViewReport();
+        }
       }
       this.maybeDetect(now);
-    }
-    if (this.dirty || this.renderer.needsResize()) {
-      const p = this.params();
-      this.view = p.resolved;
-      this.drawInfo = this.renderer.draw(p);
-      this.dirty = false;
     }
   }
 
@@ -412,9 +412,11 @@ class Tile {
 
   snapshot() {
     if (!this.renderer || !this.renderer.hasFrame) return toast('No video yet.', 'warn');
-    this.renderer.draw({ ...this.params(), grid: false });
-    const url = this.canvas.toDataURL('image/png');
-    this.dirty = true;
+    // Render offscreen at 2× the tile size (at least 640 px wide, at most 2560).
+    const r = this.body.getBoundingClientRect();
+    const scale = Math.min(2560 / r.width, Math.max(640 / r.width, 2 * (window.devicePixelRatio || 1)));
+    const url = S.compositor.snapshot(this.renderer, this.params(), Math.round(r.width * scale), Math.round(r.height * scale));
+    if (!url) return toast('Could not take a snapshot.', 'error');
     const h = headsetById(this.id);
     const a = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -450,7 +452,9 @@ class Tile {
 
     let status = '';
     let actions = '';
+    const resizing = this.resizing && this.renderer && this.renderer.hasFrame && st.state !== 'error';
     if (this.fatal) status = `<b>Cannot display video</b><span>${esc(this.fatal)}</span>`;
+    else if (resizing) status = `<div class="spinner"></div><b>Changing resolution</b><span>${st.sizeLong ? `${esc(st.sizeLong)} px` : ''}</span>`;
     else if (st.state === 'starting') status = `<div class="spinner"></div><b>Starting stream…</b><span>${st.transport ? `via ${st.transport === 'usb' ? 'USB' : 'Wi-Fi'}` : ''}</span>`;
     else if (st.state === 'reconnecting')
       status = `<div class="spinner"></div><b>Reconnecting… (attempt ${st.retries || 1})</b><span>${esc(st.error || '')}</span>`;
@@ -461,8 +465,10 @@ class Tile {
     }
     this.statusEl.innerHTML = status + actions;
     this.statusEl.hidden = !status;
+    this.statusEl.classList.toggle('resizing', !!resizing && !this.fatal);
     this.dirty = true;
     this.updateStats();
+    scheduleViewReport();
   }
 
   resetVideo(family) {
@@ -477,7 +483,6 @@ class Tile {
   }
 
   destroy() {
-    clearTimeout(this.fallbackTimer);
     this.decoder.close();
     if (this.pendingFrame) this.pendingFrame.close();
     if (this.renderer) this.renderer.dispose();
@@ -527,6 +532,8 @@ function layoutGrid() {
   // Remote browsers only receive video for the tiles they show.
   if (xr.setVisibleStreams) xr.setVisibleStreams([...S.tiles].filter(([, t]) => !t.el.hidden).map(([id]) => id));
   updateEmptyState();
+  if (S.compositor) S.compositor.dirty = true;
+  scheduleViewReport();
 }
 
 function updateEmptyState() {
@@ -543,20 +550,150 @@ function updateEmptyState() {
   }
 }
 
-/** Fullscreen with the WebKit prefix (iPad Safari), or a CSS fallback where element fullscreen is missing (iPhone). */
-function toggleFullscreen(el) {
+/**
+ * Fullscreen for one stream: the whole window goes fullscreen with that tile focused,
+ * because all video is drawn by one shared canvas. Uses the WebKit prefix on iPad
+ * Safari, and a CSS-only fallback where element fullscreen is missing (iPhone).
+ */
+function toggleAppFullscreen(id) {
   const d = document;
-  if (d.fullscreenElement || d.webkitFullscreenElement) return (d.exitFullscreen || d.webkitExitFullscreen).call(d);
-  if (el.classList.contains('pseudo-full')) return el.classList.remove('pseudo-full');
-  const req = el.requestFullscreen || el.webkitRequestFullscreen;
-  const fallback = () => el.classList.add('pseudo-full');
-  if (!req) return fallback();
+  const root = d.documentElement;
+  if (d.body.classList.contains('app-full')) return exitAppFullscreen();
+  S.focusBeforeFull = S.focus;
+  setFocus(id);
+  d.body.classList.add('app-full');
+  const req = root.requestFullscreen || root.webkitRequestFullscreen;
+  const pseudo = () => d.body.classList.add('pseudo-full');
+  if (!req) return pseudo();
   try {
-    const p = req.call(el);
-    if (p && p.catch) p.catch(fallback);
+    const p = req.call(root);
+    if (p && p.catch) p.catch(pseudo);
   } catch {
-    fallback();
+    pseudo();
   }
+}
+
+function exitAppFullscreen() {
+  const d = document;
+  if (d.fullscreenElement || d.webkitFullscreenElement) (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+  d.body.classList.remove('app-full', 'pseudo-full');
+  setFocus(S.focusBeforeFull || null);
+  S.focusBeforeFull = null;
+}
+
+function onFullscreenChange() {
+  const d = document;
+  // Leaving real fullscreen (e.g. with Esc) also leaves the focused fullscreen layout.
+  if (!d.fullscreenElement && !d.webkitFullscreenElement && d.body.classList.contains('app-full') && !d.body.classList.contains('pseudo-full')) {
+    d.body.classList.remove('app-full');
+    setFocus(S.focusBeforeFull || null);
+    S.focusBeforeFull = null;
+  }
+}
+
+// ------------------------------------------------- compositor & view sizes
+
+/** Per-headset memory of the panel layout and frame size (survives restarts). */
+function viewMemory(id) {
+  try {
+    return JSON.parse(localStorage.getItem(`xrmc.view.${id}`)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberView(id, patch) {
+  try {
+    localStorage.setItem(`xrmc.view.${id}`, JSON.stringify({ ...viewMemory(id), ...patch }));
+  } catch {
+    /* storage full or unavailable */
+  }
+}
+
+/** The visible part of the stream grid (excludes scrollbars), in CSS pixels. */
+function gridClip() {
+  const g = $('#grid');
+  const r = g.getBoundingClientRect();
+  const left = r.left + g.clientLeft;
+  const top = r.top + g.clientTop;
+  return { left, top, right: left + g.clientWidth, bottom: top + g.clientHeight };
+}
+
+/** Draw every visible stream into the shared canvas, only when something changed. */
+function renderAll() {
+  const c = S.compositor;
+  if (!c || c.lost) return;
+  const tiles = [...S.tiles.values()].filter((t) => !t.el.hidden && t.renderer && t.renderer.hasFrame);
+  const clip = gridClip();
+  const rects = tiles.map((t) => t.body.getBoundingClientRect());
+  const sig = [window.devicePixelRatio, c.canvas.clientWidth, c.canvas.clientHeight, clip.left, clip.top, clip.right, clip.bottom]
+    .concat(...rects.map((r) => [r.left, r.top, r.width, r.height]))
+    .join(',');
+  if (!c.dirty && sig === S.renderSig && !tiles.some((t) => t.dirty)) return;
+  c.beginFrame();
+  tiles.forEach((t, i) => {
+    const p = t.params();
+    p.blur = !!t.resizing;
+    t.view = p.resolved;
+    t.drawInfo = c.draw(t.renderer, p, rects[i], clip);
+    t.dirty = false;
+  });
+  c.dirty = false;
+  S.renderSig = sig;
+}
+
+/**
+ * requestAnimationFrame is throttled when the window is occluded (e.g. captured by
+ * OBS behind other windows); keep rendering new frames with a timer fallback.
+ */
+function scheduleRenderFallback() {
+  if (S.renderFallback) return;
+  S.renderFallback = setTimeout(() => {
+    S.renderFallback = null;
+    const now = performance.now();
+    if (now - (S.lastFrameLoop || 0) < 40) return;
+    for (const t of S.tiles.values()) if (!t.el.hidden) t.tick(now);
+    renderAll();
+  }, 50);
+}
+
+/** How a tile shows its stream, for matching the stream's resolution on the hub. */
+function viewRequirement(t) {
+  if (t.el.hidden) return { visible: false, mode: t.viewMode };
+  const r = t.body.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const p = t.params();
+  // Round to 8 px so sub-pixel layout jitter doesn't spam the hub.
+  const px = (v) => Math.round((v * dpr) / 8) * 8;
+  return { visible: true, tileW: px(r.width), tileH: px(r.height), mode: t.viewMode, zoom: Number(p.zoom) || 1, outputAspect: p.outputAspect || 'eye', layout: p.layout, rotation: p.rotation };
+}
+
+/** Send changed tile sizes to the hub (it decides whether a stream must change resolution). */
+async function flushViewReport() {
+  clearTimeout(S.viewReportTimer);
+  S.viewReportTimer = null;
+  if (!xr.reportViewSizes || !S.sentViewSizes) return;
+  const out = {};
+  for (const [id, t] of S.tiles) {
+    const req = viewRequirement(t);
+    const key = JSON.stringify(req);
+    if (S.sentViewSizes.get(id) !== key) {
+      out[id] = req;
+      S.sentViewSizes.set(id, key);
+    }
+  }
+  for (const id of [...S.sentViewSizes.keys()]) {
+    if (!S.tiles.has(id)) {
+      out[id] = null;
+      S.sentViewSizes.delete(id);
+    }
+  }
+  if (Object.keys(out).length) await xr.reportViewSizes(out).catch((e) => console.warn('view sizes:', e.message));
+}
+
+function scheduleViewReport(delay = 250) {
+  if (S.viewReportTimer) return;
+  S.viewReportTimer = setTimeout(flushViewReport, delay);
 }
 
 function setFocus(id) {
@@ -573,6 +710,7 @@ async function startStream(id, opts) {
   t.resetVideo();
   S.streams.set(id, { id, state: 'starting' });
   t.refresh();
+  await flushViewReport();
   try {
     await xr.startStream(id, opts);
   } catch (e) {
@@ -597,9 +735,12 @@ function onStreamState(st) {
   }
   S.streams.set(st.id, st);
   const t = ensureTile(st.id);
+  if (st.state === 'resizing') t.resizing = true;
+  else if (st.state === 'error' || (st.reason !== 'resize' && st.state === 'reconnecting')) t.resizing = false;
   if (st.state === 'starting' || st.state === 'reconnecting') {
-    if ((prev && prev.state === 'live') || (st.codec && t.decoder.family !== st.codec)) t.resetVideo(st.codec);
+    if ((prev && (prev.state === 'live' || prev.state === 'resizing')) || (st.codec && t.decoder.family !== st.codec)) t.resetVideo(st.codec);
   }
+  if (S.compositor) S.compositor.dirty = true;
   t.refresh();
   renderSidebar();
 }
@@ -619,7 +760,7 @@ function batteryHtml(b, name) {
 function headsetCard(h) {
   const b = brandOf(h);
   const st = S.streams.get(h.id);
-  const streaming = st && ['starting', 'live', 'reconnecting'].includes(st.state);
+  const streaming = st && ['starting', 'live', 'reconnecting', 'resizing'].includes(st.state);
 
   if (h.pending) {
     let body = '';
@@ -1197,6 +1338,7 @@ function openSettings() {
     <label class="field"><span>Default view</span>
       <select id="s-view">${VIEW_MODES.map((m) => `<option value="${m.id}" ${m.id === s.defaultViewMode ? 'selected' : ''}>${m.label} — ${esc(m.title)}</option>`).join('')}</select>
     </label>
+    <label class="check"><input type="checkbox" id="s-autores" ${s.autoResolution !== false ? 'checked' : ''}/> <span><b>Match stream resolution to the size on screen</b> (recommended)<br/><small class="muted">Each headset streams only as many pixels as its tile shows, up to the quality above: less bandwidth and GPU load with many headsets. When a tile grows or shrinks enough, that stream briefly restarts at the new resolution.</small></span></label>
     <label class="check"><input type="checkbox" id="s-oneeye" ${s.singleEyeStream ? 'checked' : ''}/> <span><b>Stream one eye only</b><br/><small class="muted">The headset crops to the selected eye before encoding: about twice the sharpness at the same bandwidth. "Both eyes" view is unavailable while on. Applies to new streams.</small></span></label>
     ${remoteBlock(s)}
     <h4>About</h4>
@@ -1228,6 +1370,7 @@ function openSettings() {
             tenBit: $('#s-tenbit', el).checked,
             defaultViewMode: $('#s-view', el).value,
             singleEyeStream: $('#s-oneeye', el).checked,
+            autoResolution: $('#s-autores', el).checked,
           };
           Object.assign(patch, readRemoteBlock(el));
           const res = await run(xr.updateSettings(patch), 'Settings saved.');
@@ -1385,6 +1528,8 @@ function bindCalibration() {
         syncCalibrationAuto();
         t.updateStats();
       }
+      // Zoom, framing, layout and rotation change how many source pixels the tile needs.
+      if (['zoom', 'outputAspect', 'layout', 'rotation', 'quadRow'].includes(k)) scheduleViewReport(600);
     }
   });
   drawer.addEventListener('click', (e) => {
@@ -1406,6 +1551,7 @@ function bindCalibration() {
 // ------------------------------------------------------------ main loop
 
 function frameLoop(now) {
+  S.lastFrameLoop = now;
   for (const t of S.tiles.values()) {
     if (!t.el.hidden) t.tick(now);
     else if (t.pendingFrame) {
@@ -1413,6 +1559,7 @@ function frameLoop(now) {
       t.pendingFrame = null;
     }
   }
+  renderAll();
   requestAnimationFrame(frameLoop);
 }
 
@@ -1703,7 +1850,9 @@ function bindGlobal() {
 
   document.addEventListener('keydown', (e) => {
     if (e.target.closest('input, select, textarea') || $('.modal-backdrop')) return;
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && document.body.classList.contains('app-full')) {
+      exitAppFullscreen();
+    } else if (e.key === 'Escape') {
       if (S.calib) closeCalibration(false);
       else setFocus(null);
     } else if (/^[1-9]$/.test(e.key)) {
@@ -1715,9 +1864,39 @@ function bindGlobal() {
   bindCalibration();
 }
 
+function initCompositor() {
+  try {
+    S.compositor = new Compositor($('#compositor'));
+  } catch (e) {
+    S.compositor = null;
+    S.compositorError = e.message;
+  }
+  S.sentViewSizes = new Map();
+  // Re-evaluate tile sizes on window resizes, grid changes and display-scale changes (moving between monitors).
+  const ro = new ResizeObserver(() => {
+    if (S.compositor) S.compositor.dirty = true;
+    scheduleViewReport(400);
+  });
+  ro.observe($('#grid'));
+  ro.observe($('.stage'));
+  const watchDpr = () => {
+    const mq = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    mq.addEventListener('change', () => {
+      if (S.compositor) S.compositor.dirty = true;
+      scheduleViewReport(400);
+      watchDpr();
+    }, { once: true });
+  };
+  watchDpr();
+  $('#grid').addEventListener('scroll', () => S.compositor && (S.compositor.dirty = true), { passive: true });
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+}
+
 async function init() {
   hydrateIcons();
   bindGlobal();
+  initCompositor();
   // Events can arrive before init() returns the brand tables needed to render them; hold them until then.
   let ready = false;
   const early = { snap: null, states: [] };

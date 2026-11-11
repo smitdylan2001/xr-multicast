@@ -73,6 +73,8 @@
           </div>
         </div>
         <div id="grid" class="grid"></div>
+        <!-- All stream video is drawn here, under the tiles' labels: one GPU context for the whole window. -->
+        <canvas id="compositor" class="compositor" aria-hidden="true"></canvas>
       </main>
 
       <aside id="calib" class="drawer hidden" aria-label="Lens calibration"></aside>

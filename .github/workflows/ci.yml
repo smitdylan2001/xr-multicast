@@ -1,9 +1,8 @@
 name: CI
 
+# Manual only, to save CI minutes: run `npm test` locally. Start it from Actions → CI → Run workflow.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:

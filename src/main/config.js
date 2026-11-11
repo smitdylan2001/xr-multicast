@@ -48,6 +48,8 @@ const DEFAULT_SETTINGS = {
   usbCodec: 'auto',
   wifiCodec: 'auto',
   tenBit: false,
+  // Match each stream's encoded resolution to the size it is shown at (restarts the stream when it must change).
+  autoResolution: true,
   usbCustom: { maxSize: 2560, bitRateMbps: 20, maxFps: 60 },
   wifiCustom: { maxSize: 1920, bitRateMbps: 10, maxFps: 60 },
   singleEyeStream: false,

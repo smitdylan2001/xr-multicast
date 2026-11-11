@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('xr', {
   startAll: () => call('stream:startAll'),
   stopAll: () => call('stream:stopAll'),
   setDecoderSupport: (support) => call('stream:decoderSupport', support),
+  reportViewSizes: (sizes) => call('stream:viewSizes', sizes),
   encoders: (id) => call('devices:encoders', id),
   updateSettings: (patch) => call('settings:update', patch),
   openExternal: (url) => call('app:openExternal', url),

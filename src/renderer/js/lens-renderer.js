@@ -1,7 +1,8 @@
 'use strict';
 
-// WebGL2 renderer that turns the raw headset panel image (two barrel-distorted
-// eye views) into a flat, rectilinear "vision corrected" view.
+// One WebGL2 compositor draws every stream tile into a single canvas (one GPU
+// context for the whole window), turning each headset's raw panel image (two
+// barrel-distorted eye views) into a flat, rectilinear "vision corrected" view.
 //
 // For every output pixel q (in units of half the eye height, centred on the
 // lens axis) we sample the panel at
@@ -37,6 +38,12 @@ uniform vec3 uChroma;       // radial scale per channel
 uniform int uRot;           // quarter turns clockwise applied to the source
 uniform vec2 uFlip;         // 1 = mirror the logical (rotated) frame on that axis
 uniform float uGrid;
+uniform float uBlur;        // 0 = sharp; >0 = blurred + dimmed (e.g. while changing resolution)
+
+const vec2 TAPS[12] = vec2[12](
+  vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
+  vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+  vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
 
 vec2 toTex(vec2 l) {
   l = mix(l, 1.0 - l, uFlip);
@@ -65,20 +72,29 @@ vec4 sampleEye(vec2 e) {
   return texture(uTex, toTex(l)) * inside(e);
 }
 
-void main() {
-  vec2 uv = vPos * 0.5 + 0.5;
+vec3 shade(vec2 p) {
   if (uMode == 0) {
-    outColor = vec4(texture(uTex, toTex(vec2(uv.x, 1.0 - uv.y))).rgb, 1.0);
+    vec2 uv = clamp(p * 0.5 + 0.5, 0.0, 1.0);
+    return texture(uTex, toTex(vec2(uv.x, 1.0 - uv.y))).rgb;
+  }
+  vec2 q = p * vec2(uOutAspect, 1.0) / uZoom;
+  return vec3(
+    sampleEye(distortToEye(q, uChroma.r)).r,
+    sampleEye(distortToEye(q, uChroma.g)).g,
+    sampleEye(distortToEye(q, uChroma.b)).b);
+}
+
+void main() {
+  if (uBlur > 0.0) {
+    vec3 acc = shade(vPos);
+    vec2 radius = vec2(0.035 / max(uOutAspect, 0.2), 0.035) * uBlur;
+    for (int i = 0; i < 12; i++) acc += shade(vPos + TAPS[i] * radius);
+    outColor = vec4(acc / 13.0 * 0.55, 1.0);
     return;
   }
-
-  vec2 q = vPos * vec2(uOutAspect, 1.0) / uZoom;
-  vec3 col;
-  col.r = sampleEye(distortToEye(q, uChroma.r)).r;
-  col.g = sampleEye(distortToEye(q, uChroma.g)).g;
-  col.b = sampleEye(distortToEye(q, uChroma.b)).b;
-
-  if (uGrid > 0.0) {
+  vec3 col = shade(vPos);
+  if (uGrid > 0.0 && uMode == 1) {
+    vec2 q = vPos * vec2(uOutAspect, 1.0) / uZoom;
     vec2 g = q * 4.0;
     vec2 a = abs(fract(g + 0.5) - 0.5) / max(fwidth(g), vec2(1e-4));
     float line = 1.0 - clamp(min(a.x, a.y), 0.0, 1.0);
@@ -88,6 +104,17 @@ void main() {
   }
   outColor = vec4(col, 1.0);
 }`;
+
+  const UNIFORMS = ['uTex', 'uMode', 'uEyeRect', 'uEyeAspect', 'uOutAspect', 'uCenter', 'uK1', 'uK2', 'uZoom', 'uChroma', 'uRot', 'uFlip', 'uGrid', 'uBlur'];
+  const LAYOUT_RECTS = (quadRow) => {
+    const qy = quadRow === 'bottom' ? 0.5 : 0;
+    return {
+      sbs: { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1] },
+      tb: { left: [0, 0, 1, 0.5], right: [0, 0.5, 1, 0.5] },
+      quad: { left: [0, qy, 0.5, 0.5], right: [0.5, qy, 0.5, 0.5] },
+      mono: { left: [0, 0, 1, 1], right: [0, 0, 1, 1] },
+    };
+  };
 
   function compile(gl, type, src) {
     const s = gl.createShader(type);
@@ -107,50 +134,35 @@ void main() {
     return m ? Number(m[1]) / Number(m[2]) : eyeAspect;
   }
 
-  class LensRenderer {
-    constructor(canvas) {
-      this.canvas = canvas;
-      const gl = canvas.getContext('webgl2', {
-        alpha: false,
-        antialias: false,
-        depth: false,
-        desynchronized: true,
-        powerPreference: 'high-performance',
-        preserveDrawingBuffer: false,
-      });
-      if (!gl) throw new Error('WebGL2 is not available on this system.');
-      this.gl = gl;
+  /** Largest box with `aspect` centred inside `box` ({x, y, w, h} in framebuffer pixels). */
+  function fit(box, aspect) {
+    let w = box.w;
+    let h = Math.round(box.w / aspect);
+    if (h > box.h) {
+      h = box.h;
+      w = Math.round(box.h * aspect);
+    }
+    return { x: box.x + Math.round((box.w - w) / 2), y: box.y + Math.round((box.h - h) / 2), w, h };
+  }
 
-      const prog = gl.createProgram();
-      gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VS));
-      gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FS));
-      gl.linkProgram(prog);
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-      this.prog = prog;
+  /** One stream's latest frame, as a texture in the shared compositor context. */
+  class VideoSurface {
+    constructor(compositor) {
+      this.c = compositor;
+      this.frameW = 0;
+      this.frameH = 0;
+      this.tex = null;
+      this.createTexture();
+    }
 
-      this.u = {};
-      for (const n of ['uTex', 'uMode', 'uEyeRect', 'uEyeAspect', 'uOutAspect', 'uCenter', 'uK1', 'uK2', 'uZoom', 'uChroma', 'uRot', 'uFlip', 'uGrid']) {
-        this.u[n] = gl.getUniformLocation(prog, n);
-      }
-
-      this.vao = gl.createVertexArray();
-      gl.bindVertexArray(this.vao);
-      const buf = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
-      const loc = gl.getAttribLocation(prog, 'aPos');
-      gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-
+    createTexture() {
+      const gl = this.c.gl;
       this.tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, this.tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      this.frameW = 0;
-      this.frameH = 0;
     }
 
     get hasFrame() {
@@ -163,22 +175,96 @@ void main() {
      *   HTMLVideoElement fed by Media Source Extensions on tablets without WebCodecs).
      */
     upload(frame) {
-      const gl = this.gl;
+      const gl = this.c.gl;
+      if (this.c.lost) return;
       gl.bindTexture(gl.TEXTURE_2D, this.tex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame.source || frame);
       this.frameW = frame.displayWidth;
       this.frameH = frame.displayHeight;
+      this.c.dirty = true;
     }
 
-    needsResize() {
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
-      const h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
-      return w !== this.canvas.width || h !== this.canvas.height;
+    /** See Compositor.analyze(). */
+    analyze(p = {}, size = 96) {
+      return this.c.analyze(this, p, size);
     }
 
-    resize() {
+    dispose() {
+      this.c.surfaces.delete(this);
+      if (!this.c.lost) this.c.gl.deleteTexture(this.tex);
+      this.tex = null;
+      this.c.dirty = true;
+    }
+  }
+
+  class Compositor {
+    /** @param {HTMLCanvasElement} canvas a transparent canvas covering the area tiles can appear in */
+    constructor(canvas) {
+      this.canvas = canvas;
+      const gl = canvas.getContext('webgl2', {
+        alpha: true,
+        premultipliedAlpha: true,
+        antialias: false,
+        depth: false,
+        stencil: false,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false,
+      });
+      if (!gl) throw new Error('WebGL2 is not available on this system.');
+      this.gl = gl;
+      this.surfaces = new Set();
+      this.dirty = true;
+      this.lost = false;
+      this.init();
+      canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        this.lost = true;
+      });
+      canvas.addEventListener('webglcontextrestored', () => {
+        this.lost = false;
+        this.init();
+        for (const s of this.surfaces) {
+          s.frameW = 0;
+          s.frameH = 0;
+          s.createTexture();
+        }
+        this.dirty = true;
+      });
+    }
+
+    init() {
+      const gl = this.gl;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VS));
+      gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FS));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      this.prog = prog;
+      this.u = {};
+      for (const n of UNIFORMS) this.u[n] = gl.getUniformLocation(prog, n);
+
+      this.vao = gl.createVertexArray();
+      gl.bindVertexArray(this.vao);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'aPos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      this.fbo = null;
+      this.fboSize = null;
+    }
+
+    createSurface() {
+      const s = new VideoSurface(this);
+      this.surfaces.add(s);
+      return s;
+    }
+
+    /** Resize the backing store to the canvas' CSS size × devicePixelRatio and clear it. */
+    beginFrame() {
+      const gl = this.gl;
       const dpr = window.devicePixelRatio || 1;
       const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
       const h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
@@ -186,67 +272,85 @@ void main() {
         this.canvas.width = w;
         this.canvas.height = h;
       }
+      this.dpr = dpr;
+      this.bounds = this.canvas.getBoundingClientRect();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
     }
 
-    fit(aspect) {
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      let w = W;
-      let h = Math.round(W / aspect);
-      if (h > H) {
-        h = H;
-        w = Math.round(H * aspect);
-      }
-      return { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2), w, h };
+    /** CSS-pixel DOMRect → framebuffer rect (bottom-left origin), relative to this canvas. */
+    toFb(r) {
+      const b = this.bounds;
+      const d = this.dpr;
+      const x = Math.round((r.left - b.left) * d);
+      const y = Math.round((b.bottom - r.bottom) * d);
+      return { x, y, w: Math.round((r.right - b.left) * d) - x, h: Math.round((b.bottom - r.top) * d) - y };
     }
 
-    /** Rotation, flip and texture binding shared by draw() and analyze(). */
-    setup(p) {
+    /**
+     * Draw one stream into a tile.
+     * @param {VideoSurface} surface
+     * @param {object} p correction params + { viewMode, grid, blur }
+     * @param {DOMRect} rect tile video area (CSS px)
+     * @param {DOMRect} clip visible area (CSS px), e.g. the scrolling grid's viewport
+     */
+    draw(surface, p, rect, clip) {
+      if (this.lost || !surface.hasFrame) return null;
+      const gl = this.gl;
+      const box = this.toFb(rect);
+      const c = this.toFb(clip);
+      const sx = Math.max(box.x, c.x);
+      const sy = Math.max(box.y, c.y);
+      const sw = Math.min(box.x + box.w, c.x + c.w) - sx;
+      const sh = Math.min(box.y + box.h, c.y + c.h) - sy;
+      if (sw <= 0 || sh <= 0) return null;
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(sx, sy, sw, sh);
+      const info = this.render(surface, p, box);
+      gl.disable(gl.SCISSOR_TEST);
+      return info;
+    }
+
+    /** Rotation, flip and texture binding for a surface. */
+    setup(surface, p) {
       const gl = this.gl;
       gl.useProgram(this.prog);
       gl.bindVertexArray(this.vao);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.tex);
+      gl.bindTexture(gl.TEXTURE_2D, surface.tex);
       gl.uniform1i(this.u.uTex, 0);
       const rot = ((Math.round((Number(p.rotation) || 0) / 90) % 4) + 4) % 4;
       gl.uniform1i(this.u.uRot, rot);
       gl.uniform2f(this.u.uFlip, p.flipH ? 1 : 0, p.flipV ? 1 : 0);
-      return { rot, LW: rot % 2 ? this.frameH : this.frameW, LH: rot % 2 ? this.frameW : this.frameH };
+      gl.uniform1f(this.u.uBlur, p.blur ? 1 : 0);
+      gl.uniform1f(this.u.uGrid, p.grid ? 1 : 0);
+      return { rot, LW: rot % 2 ? surface.frameH : surface.frameW, LH: rot % 2 ? surface.frameW : surface.frameH };
     }
 
     /**
-     * @param {object} p correction params + { viewMode: 'corrected'|'stereo'|'raw', grid: 0|1 }.
-     *   layout should already be resolved ('sbs'|'tb'|'quad'|'mono'); 'auto' falls back to the frame aspect.
-     * @returns {{layout:string, rotation:number, eyeW:number, eyeH:number}|null}
+     * Render a surface into `box` of the currently bound framebuffer.
+     * layout should already be resolved ('sbs'|'tb'|'quad'|'mono'); 'auto' falls back to the frame aspect.
+     * @returns {{layout:string, rotation:number, eyeW:number, eyeH:number}}
      */
-    draw(p) {
+    render(surface, p, box) {
       const gl = this.gl;
-      this.resize();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      if (!this.hasFrame) return null;
-
-      const { rot, LW, LH } = this.setup(p);
+      const { rot, LW, LH } = this.setup(surface, p);
       const layout = ['sbs', 'tb', 'quad', 'mono'].includes(p.layout) ? p.layout : LW / LH >= 1.6 ? 'sbs' : 'mono';
       const rotation = rot * 90;
 
       if (p.viewMode === 'raw') {
-        const vp = this.fit(LW / LH);
+        const vp = fit(box, LW / LH);
         gl.viewport(vp.x, vp.y, vp.w, vp.h);
         gl.uniform1i(this.u.uMode, 0);
+        gl.uniform1f(this.u.uOutAspect, LW / LH);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         return { layout, rotation, eyeW: LW, eyeH: LH };
       }
 
-      const qy = p.quadRow === 'bottom' ? 0.5 : 0;
-      const rects = {
-        sbs: { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1] },
-        tb: { left: [0, 0, 1, 0.5], right: [0, 0.5, 1, 0.5] },
-        quad: { left: [0, qy, 0.5, 0.5], right: [0.5, qy, 0.5, 0.5] },
-        mono: { left: [0, 0, 1, 1], right: [0, 0, 1, 1] },
-      }[layout];
+      const rects = LAYOUT_RECTS(p.quadRow)[layout];
       const eyeW = LW * rects.left[2];
       const eyeH = LH * rects.left[3];
       const eyeAspect = eyeW / eyeH;
@@ -260,7 +364,6 @@ void main() {
       gl.uniform1f(this.u.uK2, Number(p.k2) || 0);
       gl.uniform1f(this.u.uZoom, Math.max(0.1, Number(p.zoom) || 1));
       gl.uniform3f(this.u.uChroma, Number(p.chromaR) || 1, 1, Number(p.chromaB) || 1);
-      gl.uniform1f(this.u.uGrid, p.grid ? 1 : 0);
 
       const drawEye = (eye, vp) => {
         const r = rects[eye];
@@ -275,14 +378,52 @@ void main() {
       if (p.viewMode === 'stereo' && layout !== 'mono') {
         // Keep each eye at most square so the pair doesn't become a thin letterbox.
         gl.uniform1f(this.u.uOutAspect, Math.min(outAspect, 1));
-        const vp = this.fit(Math.min(outAspect, 1) * 2);
+        const vp = fit(box, Math.min(outAspect, 1) * 2);
         const half = Math.floor(vp.w / 2);
         drawEye('left', { x: vp.x, y: vp.y, w: half, h: vp.h });
         drawEye('right', { x: vp.x + half, y: vp.y, w: vp.w - half, h: vp.h });
       } else {
-        drawEye(p.eye === 'right' ? 'right' : 'left', this.fit(outAspect));
+        drawEye(p.eye === 'right' ? 'right' : 'left', fit(box, outAspect));
       }
       return { layout, rotation, eyeW: Math.round(eyeW), eyeH: Math.round(eyeH) };
+    }
+
+    /** Offscreen render target of the given size (reused). */
+    target(w, h) {
+      const gl = this.gl;
+      const key = `${w}x${h}`;
+      if (!this.fbo || this.fboSize !== key) {
+        if (this.fbo) {
+          gl.deleteFramebuffer(this.fbo);
+          gl.deleteTexture(this.fboTex);
+        }
+        this.fboTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        this.fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+        this.fboSize = key;
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
+    /** Read back the offscreen target, top row first. */
+    readTarget(w, h) {
+      const gl = this.gl;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const out = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      this.dirty = true; // the onscreen canvas needs a redraw after offscreen work
+      return out;
     }
 
     /**
@@ -290,62 +431,36 @@ void main() {
      * target and detect its view grid. Cheap, but stalls on readPixels: call rarely.
      * @returns {{grid:{cols:number, rows:number, confidence:number}|null, mean:number}|null}
      */
-    analyze(p = {}, size = 96) {
-      if (!this.hasFrame) return null;
-      const gl = this.gl;
-      if (!this.fbo || this.fboSize !== size) {
-        if (this.fbo) {
-          gl.deleteFramebuffer(this.fbo);
-          gl.deleteTexture(this.fboTex);
-        }
-        this.fboTex = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        this.fbo = gl.createFramebuffer();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
-        this.fboSize = size;
-        this.fboPixels = new Uint8Array(size * size * 4);
-      }
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
-      gl.viewport(0, 0, size, size);
-      this.setup(p);
-      gl.uniform1i(this.u.uMode, 0);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, this.fboPixels);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-      const px = this.fboPixels;
+    analyze(surface, p = {}, size = 96) {
+      if (this.lost || !surface.hasFrame) return null;
+      this.target(size, size);
+      this.setup(surface, { ...p, blur: false, grid: false });
+      this.gl.uniform1i(this.u.uMode, 0);
+      this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
+      const px = this.readTarget(size, size);
       const luma = new Float32Array(size * size);
       let sum = 0;
-      for (let y = 0; y < size; y++) {
-        // readPixels rows start at the bottom; flip so row 0 is the top of the frame.
-        const src = (size - 1 - y) * size * 4;
-        for (let x = 0; x < size; x++) {
-          const o = src + x * 4;
-          const v = (0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2]) / 255;
-          luma[y * size + x] = v;
-          sum += v;
-        }
+      for (let i = 0; i < size * size; i++) {
+        const v = (0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]) / 255;
+        luma[i] = v;
+        sum += v;
       }
       return { grid: window.LayoutDetect.detectGrid(luma, size, size), mean: sum / (size * size) };
     }
 
-    dispose() {
-      const gl = this.gl;
-      gl.deleteTexture(this.tex);
-      if (this.fbo) {
-        gl.deleteFramebuffer(this.fbo);
-        gl.deleteTexture(this.fboTex);
-      }
-      gl.deleteProgram(this.prog);
-      gl.deleteVertexArray(this.vao);
-      const ext = gl.getExtension('WEBGL_lose_context');
-      if (ext) ext.loseContext();
+    /** PNG data URL of one stream rendered at w×h (no grid, no blur). */
+    snapshot(surface, p, w, h) {
+      if (this.lost || !surface.hasFrame) return null;
+      this.target(w, h);
+      this.render(surface, { ...p, grid: false, blur: false }, { x: 0, y: 0, w, h });
+      const px = this.readTarget(w, h);
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      c.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
+      return c.toDataURL('image/png');
     }
   }
 
-  window.LensRenderer = LensRenderer;
+  window.Compositor = Compositor;
 })();

@@ -2,6 +2,11 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const { StreamSession, listEncoders } = require('./stream-session');
 const { QUALITY_PRESETS, CODECS, AUTO_CODEC_ORDER } = require('./config');
+const { neededLongSide, pickStep, scaledBitrate, decideResize } = require('../shared/view-size');
+
+const RESIZE_DEBOUNCE_MS = 1000;
+/** Don't re-evaluate size right after a (re)start: the first frames settle the layout. */
+const RESIZE_SETTLE_MS = 2500;
 
 const MAX_RETRIES = 5;
 
@@ -22,6 +27,11 @@ class StreamManager extends EventEmitter {
     this.codecFailures = new Map();
     /** serial -> Set of codecs whose 10-bit mode failed this run */
     this.tenBitFailures = new Map();
+    /** serial -> Map(viewerId -> view requirement) for resolution matching */
+    this.viewSizes = new Map();
+    /** adb serial -> { w, h } natural panel size from `wm size` */
+    this.panelSizes = new Map();
+    this.resizeTimers = new Map();
   }
 
   serverAvailable() {
@@ -69,7 +79,7 @@ class StreamManager extends EventEmitter {
   /** Restart live streams whose codec some viewer can no longer decode. */
   restartIncompatibleStreams() {
     for (const e of this.entries.values()) {
-      if (!e.codec || e.userStopped || !['starting', 'live', 'reconnecting'].includes(e.state)) continue;
+      if (!e.codec || e.userStopped || !['starting', 'live', 'reconnecting', 'resizing'].includes(e.state)) continue;
       const d = this.decoderSupport[e.codec];
       if (!d || !d.any) {
         this.notice('info', `Switching a stream to a codec every viewer can play.`);
@@ -212,7 +222,7 @@ class StreamManager extends EventEmitter {
         codec = 'h264';
       }
     }
-    if (existing && !existing.userStopped && ['starting', 'live', 'reconnecting'].includes(existing.state)) {
+    if (existing && !existing.userStopped && ['starting', 'live', 'reconnecting', 'resizing'].includes(existing.state)) {
       if (!restart && (!transport || transport === existing.transport)) return;
       await this.stop(serial, { replaced: true });
     }
@@ -228,15 +238,122 @@ class StreamManager extends EventEmitter {
     this.launch(entry).catch((e) => this.finish(entry, e.message));
   }
 
-  async eyeCrop(adbSerial, eye) {
+  /** Natural display size of the headset (what scrcpy captures before scaling). Cached per transport. */
+  async panelSize(adbSerial) {
+    if (this.panelSizes.has(adbSerial)) return this.panelSizes.get(adbSerial);
     const out = await this.adb.shell(adbSerial, 'wm size', { timeout: 5000 });
     const m = out.match(/Override size:\s*(\d+)x(\d+)/) || out.match(/Physical size:\s*(\d+)x(\d+)/);
-    if (!m) return null;
-    const w = Number(m[1]);
-    const h = Number(m[2]);
+    const size = m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+    if (size) this.panelSizes.set(adbSerial, size);
+    return size;
+  }
+
+  async eyeCrop(adbSerial, eye) {
+    const size = await this.panelSize(adbSerial);
+    if (!size) return null;
+    const { w, h } = size;
     if (w < h * 1.6) return null; // not a side-by-side stereo panel
     const half = Math.floor(w / 2);
     return `${half}:${h}:${eye === 'right' ? half : 0}:0`;
+  }
+
+  // ------------------------------------------------- resolution matching
+
+  /**
+   * A viewer reports how it shows each stream. `sizes` maps stream id -> requirement
+   * ({visible, tileW, tileH, mode, zoom, outputAspect, layout, rotation}) or null when
+   * the viewer no longer shows that stream.
+   */
+  setViewSizes(viewerId, sizes) {
+    for (const [id, req] of Object.entries(sizes || {})) {
+      if (!this.viewSizes.has(id)) this.viewSizes.set(id, new Map());
+      const m = this.viewSizes.get(id);
+      if (req) m.set(viewerId, req);
+      else m.delete(viewerId);
+      if (!m.size) this.viewSizes.delete(id);
+      this.scheduleResize(id, RESIZE_DEBOUNCE_MS);
+    }
+  }
+
+  /** Forget everything a viewer reported (it disconnected). */
+  clearViewer(viewerId) {
+    for (const [id, m] of this.viewSizes) {
+      if (m.delete(viewerId)) {
+        if (!m.size) this.viewSizes.delete(id);
+        this.scheduleResize(id, RESIZE_DEBOUNCE_MS);
+      }
+    }
+  }
+
+  /** Frame size in natural orientation for a stream: the crop if any, else the panel. */
+  frameSizeFor(entry, panel) {
+    if (entry.crop) {
+      const [w, h] = entry.crop.split(':').map(Number);
+      return { w, h };
+    }
+    if (panel) return panel;
+    // Unknown panel: the encoded size from the session is proportional, which is all we need.
+    if (entry.width && entry.height) return { w: entry.width, h: entry.height };
+    return null;
+  }
+
+  /**
+   * Target encoded long side for a stream from all viewers' requirements.
+   * @returns {{size:number, nativeLong:number, hiddenOnly:boolean}|null} null = no information, use the preset
+   */
+  targetSize(entry, preset, frame) {
+    const reqs = [...(this.viewSizes.get(entry.serial) || new Map()).values()];
+    if (!frame || !reqs.length) return null;
+    const nativeLong = entry.crop || !this.panelSizes.get(entry.adbSerial) ? 0 : Math.max(frame.w, frame.h);
+    const hiddenOnly = reqs.every((r) => r.visible === false);
+    const need = Math.max(0, ...reqs.map((r) => neededLongSide(frame, r)));
+    const size = pickStep(need, { cap: preset.maxSize || 0, nativeLong: nativeLong || Math.max(frame.w, frame.h) });
+    return { size, nativeLong: nativeLong || Math.max(frame.w, frame.h), hiddenOnly };
+  }
+
+  scheduleResize(serial, delay) {
+    clearTimeout(this.resizeTimers.get(serial));
+    this.resizeTimers.set(
+      serial,
+      setTimeout(() => {
+        this.resizeTimers.delete(serial);
+        this.evaluateResize(serial);
+      }, delay),
+    );
+  }
+
+  /** Restart a live stream at a new resolution, but only when it actually needs one. */
+  evaluateResize(serial) {
+    const entry = this.entries.get(serial);
+    if (!entry || !entry.autoSize || entry.userStopped || entry.resizing) return;
+    if (entry.state !== 'live' || !entry.gotMedia) return this.scheduleResize(serial, RESIZE_DEBOUNCE_MS);
+    const settled = Date.now() - (entry.liveSince || 0);
+    if (settled < RESIZE_SETTLE_MS) return this.scheduleResize(serial, RESIZE_SETTLE_MS - settled);
+    const preset = this.qualityFor(entry.transport);
+    const frame = this.frameSizeFor(entry, this.panelSizes.get(entry.adbSerial));
+    const t = this.targetSize(entry, preset, frame);
+    if (!t) return;
+    const current = entry.sizeLong || t.nativeLong;
+    const d = decideResize({ current, target: t.size, nativeLong: t.nativeLong, now: Date.now(), downSince: entry.downSince, hiddenOnly: t.hiddenOnly });
+    if (d.action === 'none') {
+      entry.downSince = null;
+    } else if (d.action === 'wait') {
+      if (entry.downSince == null) entry.downSince = Date.now();
+      this.scheduleResize(serial, d.waitMs + 50);
+    } else {
+      entry.downSince = null;
+      this.resize(entry, t.size);
+    }
+  }
+
+  resize(entry, size) {
+    if (!entry.session) return;
+    entry.resizing = true;
+    entry.reason = 'resize';
+    entry.resizeFrom = entry.sizeLong;
+    entry.resizeTo = size;
+    this.setState(entry, 'resizing');
+    entry.session.stop();
   }
 
   async launch(entry) {
@@ -254,6 +371,25 @@ class StreamManager extends EventEmitter {
       const eye = (rec.calibration && rec.calibration.eye) || 'left';
       crop = await this.eyeCrop(t.adbSerial, eye).catch(() => null);
     }
+    // Match the encoded size to how the stream is shown (falls back to the preset).
+    let size = preset.maxSize || 0;
+    let bitRate = preset.bitRate;
+    entry.autoSize = settings.autoResolution !== false;
+    if (entry.autoSize) {
+      const panel = await this.panelSize(t.adbSerial).catch(() => null);
+      const frame = this.frameSizeFor({ ...entry, crop }, panel);
+      const target = this.targetSize({ ...entry, crop, adbSerial: t.adbSerial }, preset, frame);
+      if (target) {
+        size = target.size >= target.nativeLong ? 0 : target.size;
+        bitRate = scaledBitrate(preset.bitRate, target.size, preset.maxSize || target.nativeLong);
+        entry.sizeLong = target.size;
+      } else {
+        entry.sizeLong = preset.maxSize || (frame ? Math.max(frame.w, frame.h) : 0);
+      }
+    } else {
+      entry.sizeLong = preset.maxSize || 0;
+    }
+
     const choice = await this.resolveCodec(entry, t);
     if (choice.note && !entry.noted) {
       entry.noted = true;
@@ -264,6 +400,8 @@ class StreamManager extends EventEmitter {
     const tenBit = this.useTenBit(entry, choice.codec);
     const session = new StreamSession(this.adb, t.adbSerial, this.serverPath, {
       ...preset,
+      maxSize: size,
+      bitRate,
       crop,
       codec: choice.codec,
       encoder: choice.encoder,
@@ -274,8 +412,11 @@ class StreamManager extends EventEmitter {
     entry.session = session;
     entry.transport = t.kind;
     entry.adbSerial = t.adbSerial;
-    entry.quality = preset.label;
-    entry.bitRate = preset.bitRate;
+    entry.quality = entry.autoSize
+      ? `Auto ${size ? `${size}px` : 'native'} · ${(bitRate / 1e6).toFixed(1)} Mbps (max: ${preset.label})`
+      : preset.label;
+    entry.bitRate = bitRate;
+    entry.resizing = false;
     entry.codec = choice.codec;
     entry.encoder = choice.encoder || null;
     entry.crop = crop;
@@ -287,12 +428,15 @@ class StreamManager extends EventEmitter {
     session.on('session', (s) => {
       entry.width = s.width;
       entry.height = s.height;
+      entry.liveSince = Date.now();
       this.setState(entry, 'live');
+      if (entry.autoSize) this.scheduleResize(serial, RESIZE_SETTLE_MS);
     });
     session.on('packet', (p) => {
       if (!entry.gotMedia && !p.config) {
         entry.gotMedia = true;
         entry.retries = 0;
+        entry.reason = null;
       }
       this.emit('packet', serial, p);
     });
@@ -304,6 +448,11 @@ class StreamManager extends EventEmitter {
       if (entry.userStopped) {
         if (this.entries.get(serial) === entry) this.entries.delete(serial);
         if (!entry.replaced) this.setState(entry, 'stopped');
+        return;
+      }
+      // Planned restart at a new resolution: relaunch right away, not a failure.
+      if (entry.resizing && this.entries.get(serial) === entry) {
+        this.launch(entry).catch((e) => this.finish(entry, e.message));
         return;
       }
       const hs = this.findHeadset(serial);
@@ -372,6 +521,9 @@ class StreamManager extends EventEmitter {
       encoder: entry.encoder || null,
       singleEye: !!entry.crop,
       retries: entry.retries,
+      reason: entry.reason || null,
+      sizeLong: entry.sizeLong || null,
+      autoSize: !!entry.autoSize,
       error: entry.state === 'error' || entry.state === 'reconnecting' ? entry.error : null,
     };
   }
@@ -384,6 +536,8 @@ class StreamManager extends EventEmitter {
   async stop(serial, { replaced = false } = {}) {
     const entry = this.entries.get(serial);
     if (!entry) return;
+    clearTimeout(this.resizeTimers.get(serial));
+    this.resizeTimers.delete(serial);
     entry.userStopped = true;
     entry.replaced = replaced;
     if (entry.session) await entry.session.stop();

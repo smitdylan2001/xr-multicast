@@ -127,6 +127,32 @@ function remoteStreamOpts(opts) {
   return out;
 }
 
+/** View requirements from a viewer: { [streamId]: {visible, tileW, tileH, mode, zoom, outputAspect, layout, rotation} | null }. */
+function checkViewSizes(sizes) {
+  if (!isPlainObject(sizes)) throw new Error('Bad view sizes.');
+  const out = {};
+  for (const [id, r] of Object.entries(sizes).slice(0, 64)) {
+    checkId(id);
+    if (r === null) {
+      out[id] = null;
+      continue;
+    }
+    if (!isPlainObject(r)) throw new Error('Bad view size.');
+    const num = (v, max) => Math.min(max, Math.max(0, Number(v) || 0));
+    out[id] = {
+      visible: r.visible !== false,
+      tileW: num(r.tileW, 16384),
+      tileH: num(r.tileH, 16384),
+      mode: ['corrected', 'stereo', 'raw'].includes(r.mode) ? r.mode : 'corrected',
+      zoom: num(r.zoom, 10) || 1,
+      outputAspect: typeof r.outputAspect === 'string' && /^(\d{1,3}(\.\d+)?:\d{1,3}(\.\d+)?|eye)$/.test(r.outputAspect) ? r.outputAspect : 'eye',
+      layout: ['sbs', 'tb', 'quad', 'mono'].includes(r.layout) ? r.layout : 'mono',
+      rotation: [0, 90, 180, 270].includes(Number(r.rotation)) ? Number(r.rotation) : 0,
+    };
+  }
+  return out;
+}
+
 function remotePatch(patch) {
   if (!isPlainObject(patch)) throw new Error('Bad update.');
   const out = {};
@@ -200,6 +226,7 @@ function registerHandlers() {
   handle('stream:stop', 'control', (_ctx, id) => streams.stop(checkId(id)));
   handle('stream:startAll', 'control', () => streams.startAll());
   handle('stream:stopAll', 'control', () => streams.stopAll());
+  handle('stream:viewSizes', 'view', (ctx, sizes) => streams.setViewSizes(ctx.remote ? `remote:${ctx.clientId}` : 'local', checkViewSizes(sizes)));
   handle('stream:decoderSupport', 'hub', (_ctx, support) => streams.setDecoderSupport(support));
   handle('settings:update', 'hub', async (_ctx, patch) => {
     const before = store.settings;

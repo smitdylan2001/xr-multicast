@@ -66,6 +66,8 @@ XR MultiCast is built and maintained by **[Dunk XR](https://dunktechnologies.com
 **Video**
 - **Codecs:** Auto, H.264, H.265 (HEVC) or AV1. *Auto* checks which hardware encoders the headset has and what the viewing devices can decode, and falls back to H.264 automatically on any failure.
 - **Bandwidth:** presets or custom resolution, bitrate (0.5–200 Mbps) and fps, set separately for USB and Wi-Fi.
+- **Resolution matched to the screen:** each headset streams only as many pixels as its tile shows (up to your quality preset), with the bitrate scaled to match. The resolution is re-checked when the window is resized, moved to another monitor, the grid changes or a stream is focused or fullscreened. A stream is restarted only when it truly needs a different resolution step, and meanwhile its last frame is shown blurred with "Changing resolution". Tablets count too: a stream shared with a tablet uses the largest size any viewer needs.
+- **One GPU surface for all streams:** every tile is drawn by one shared WebGL context, which keeps memory low and avoids browser limits on the number of GPU contexts with many headsets.
 - **Stream one eye only:** the headset crops before encoding, giving about twice the sharpness at the same bandwidth.
 - **10-bit colour** (experimental): H.265 Main 10 or 10-bit AV1, with automatic fallback to 8-bit.
 
@@ -200,7 +202,7 @@ npm run dist:mac     # .dmg
 npm run dist:linux   # .deb + AppImage
 ```
 
-Installers don't contain adb (see [adb](#adb-android-platform-tools)). Pushing a tag like `v1.0.0` builds all three platforms on GitHub Actions and attaches the installers to a release.
+Installers don't contain adb (see [adb](#adb-android-platform-tools)). Pushing a tag like `v1.0.0` builds all three platforms on GitHub Actions and attaches the installers to a release. The test workflow only runs when started manually (Actions → CI → Run workflow), to save CI minutes; run `npm test` locally instead.
 
 The scrcpy client/server protocol is internal and changes between scrcpy versions. The server version is pinned in `src/main/config.js`. If you bump it, re-run `npm run setup` and check `src/main/stream-session.js` against that release's `doc/develop.md`.
 

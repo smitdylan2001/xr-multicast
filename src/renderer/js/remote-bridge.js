@@ -219,7 +219,12 @@
     for (const id of [...knownStreams.keys()]) if (!live.has(id)) emit('state', [{ id, state: 'stopped' }]);
     for (const s of data.streams) emit('state', [s]);
     pushSubscriptions();
+    // The hub forgot this viewer's tile sizes when it disconnected.
+    if (Object.keys(viewSizes).length) call('stream:viewSizes', viewSizes).catch(() => {});
   }
+
+  /** Latest tile size per stream reported by this browser (resent after reconnects). */
+  const viewSizes = {};
 
   function pushSubscriptions() {
     const ids = document.hidden ? [] : visible;
@@ -384,6 +389,13 @@
     remoteInfo: hubOnly,
     remoteNewPin: hubOnly,
     remoteRevoke: hubOnly,
+    reportViewSizes: (sizes) => {
+      for (const [id, r] of Object.entries(sizes || {})) {
+        if (r) viewSizes[id] = r;
+        else delete viewSizes[id];
+      }
+      return call('stream:viewSizes', sizes);
+    },
     setVisibleStreams: (ids) => {
       visible = Array.isArray(ids) ? ids.slice() : [];
       pushSubscriptions();
