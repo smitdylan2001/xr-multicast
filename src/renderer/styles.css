@@ -72,8 +72,141 @@ svg {
   flex: 1;
 }
 
+/* Status colours: green = fine, amber = works with a caveat, red = broken.
+   Amber and red statuses are .fix-link buttons that explain how to fix them. */
 .bad {
   color: var(--bad);
+}
+
+.good {
+  color: var(--ok);
+}
+
+.warn-text {
+  color: var(--warn);
+}
+
+.fix-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  margin: -1px -6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.fix-link.bad {
+  color: var(--bad);
+}
+
+.fix-link.warn {
+  color: var(--warn);
+}
+
+.fix-link:hover {
+  background: #ffffff14;
+  text-decoration-style: solid;
+}
+
+.link-btn {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.banner-btn {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.banner-btn svg {
+  margin-top: 1px;
+}
+
+.battery.fix-btn {
+  border: 0;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 5px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.fix-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.terms-box {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+}
+
+.terms-box p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#adb-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+#adb-progress {
+  flex: 1;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+details.manual {
+  margin: 10px 0 4px;
+  color: var(--muted);
+}
+
+details.manual summary {
+  cursor: pointer;
+}
+
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 /* ------------------------------------------------------------ buttons */

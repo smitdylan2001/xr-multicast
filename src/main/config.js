@@ -12,6 +12,9 @@ const PLATFORM_TOOLS_URLS = {
   linux: 'https://dl.google.com/android/repository/platform-tools-latest-linux.zip',
 };
 
+// Google's terms for Android SDK Platform-Tools; users accept these in-app before adb is downloaded.
+const ADB_TERMS_URL = 'https://developer.android.com/studio/terms';
+
 const REMOTE_SERVER_PATH = '/data/local/tmp/xrmc-scrcpy-server.jar';
 const REMOTE_LIST_SERVER_PATH = '/data/local/tmp/xrmc-scrcpy-list.jar';
 
@@ -60,6 +63,7 @@ module.exports = {
   SCRCPY_VERSION,
   SCRCPY_SERVER_URL,
   PLATFORM_TOOLS_URLS,
+  ADB_TERMS_URL,
   REMOTE_SERVER_PATH,
   REMOTE_LIST_SERVER_PATH,
   DEFAULT_ADB_TCP_PORT,

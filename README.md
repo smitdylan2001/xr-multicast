@@ -9,6 +9,8 @@ XR MultiCast is a desktop app for **Windows, macOS and Linux** that mirrors stan
 
 Instead of the raw fisheye panel image, you get a **flat, natural "vision-corrected" view** of what the wearer sees. Each stream is labelled with the headset's number, name and colour.
 
+XR MultiCast is built and maintained by **[Dunk XR](https://dunktechnologies.com)** (Dunk Technologies), which also offers **whitelabel versions and custom hardware solutions** built on it. See [Whitelabel & custom hardware](#whitelabel--custom-hardware-by-dunk-xr).
+
 | Brand | Recognised models |
 | --- | --- |
 | **Meta** | Quest, Quest 2, Quest Pro, Quest 3, Quest 3S |
@@ -29,6 +31,7 @@ Instead of the raw fisheye panel image, you get a **flat, natural "vision-correc
 - [Connecting a headset](#connecting-a-headset)
 - [Tablets & phones](#tablets--phones)
 - [Building your own tools on top](#building-your-own-tools-on-top)
+- [Whitelabel & custom hardware by Dunk XR](#whitelabel--custom-hardware-by-dunk-xr)
 - [Installing on Linux](#installing-on-linux)
 - [Building from source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
@@ -99,11 +102,20 @@ All supported headsets run Android, so XR MultiCast uses the same building block
 git clone https://github.com/smitdylan2001/xr-multicast.git
 cd xr-multicast
 npm install
-npm run setup     # downloads Android platform-tools (adb) + scrcpy-server v5.0.1 into vendor/
+npm run setup     # downloads scrcpy-server v5.0.1 into vendor/
 npm start
 ```
 
-Requires Node.js 18 or newer.
+Running from source requires Node.js 18 or newer.
+
+### adb (Android Platform-Tools)
+
+XR MultiCast talks to headsets through Google's **adb**. To keep the project purely MIT-licensed, **adb is not included** in this repository or in the installers.
+
+- If you already have adb, the app finds it automatically. That covers an Android SDK or Android Studio install, `apt install adb`, `brew install android-platform-tools` and `winget install Google.PlatformTools`.
+- If not, the app shows an **Install adb** dialog on first launch. It explains the licence, links to the [Android SDK License Agreement](https://developer.android.com/studio/terms), and only downloads after you tick that you agree. The official package comes straight from `dl.google.com` into the app's own data folder, so nothing is installed system-wide. You can update it later from **Settings → About**.
+- Developers can fetch it for local builds with `npm run setup -- --with-adb`. Doing so also means you accept Google's terms.
+- `XRMC_ADB=/path/to/adb` forces a specific adb.
 
 ## Connecting a headset
 
@@ -145,6 +157,22 @@ Inside the app, the main extension points are:
 - `src/main/stream-manager.js`: stream lifecycle, codec policy.
 - `src/main/main.js`: the handler registry; add a method there and it's available over IPC and the remote API, with a permission level.
 
+## Whitelabel & custom hardware by Dunk XR
+
+XR MultiCast is developed by **[Dunk XR](https://dunktechnologies.com)**, the immersive-technology studio of **Dunk Technologies**. Dunk XR has over seven years of hands-on VR and AR development experience and provides:
+
+- **Immersive development:** custom VR, AR and MR applications for training, education, healthcare, events and entertainment.
+- **Workshops:** hands-on sessions from VR basics to advanced AR techniques, tailored to your team.
+- **Consultancy:** expert guidance to get immersive projects unstuck and shipped.
+
+**Built on XR MultiCast:**
+
+- **Whitelabel versions:** XR MultiCast under your own brand, with your name, logo and colours, preconfigured for your headsets and venues, and installers you can distribute to your customers.
+- **Custom hardware solutions:** turnkey multi-headset casting stations. Examples include dedicated hub computers, wall-display and kiosk setups, physical control panels (cast-all buttons, headset selectors, status lights) and charging/storage carts with integrated casting.
+- **Integrations and custom features:** connecting XR MultiCast to your LMS, session software or venue systems through the [remote API](docs/remote-api.md), or adding features for your use case.
+
+Get in touch: **[info@dunktechnologies.com](mailto:info@dunktechnologies.com)** · [dunktechnologies.com](https://dunktechnologies.com) · [LinkedIn](https://www.linkedin.com/in/smitdylan/)
+
 ## Installing on Linux
 
 **Per-user install** (no root needed):
@@ -172,14 +200,17 @@ npm run dist:mac     # .dmg
 npm run dist:linux   # .deb + AppImage
 ```
 
-Each target bundles its own adb. Pushing a tag like `v1.0.0` builds all three platforms on GitHub Actions and attaches the installers to a release.
+Installers don't contain adb (see [adb](#adb-android-platform-tools)). Pushing a tag like `v1.0.0` builds all three platforms on GitHub Actions and attaches the installers to a release.
 
 The scrcpy client/server protocol is internal and changes between scrcpy versions. The server version is pinned in `src/main/config.js`. If you bump it, re-run `npm run setup` and check `src/main/stream-session.js` against that release's `doc/develop.md`.
 
 ## Troubleshooting
 
+The status bar is colour-coded: **green** means fine, **amber** means it works but with a caveat, and **red** means something is broken. Every amber or red item, including the low-battery indicator and the adb banner, can be clicked for an explanation and the fix.
+
 - **Wi-Fi casting stops after a headset reboots.** Network ADB resets on reboot. Plug in via USB once and click *Enable Wi-Fi*.
 - **Scan finds nothing.** The hub and headsets must share a subnet. Guest networks and client isolation block this.
+- **adb not installed.** Click it in the status bar to install it, or install adb yourself. See [adb](#adb-android-platform-tools).
 - **"adb server version doesn't match".** Another tool (SideQuest, MQDH, Android Studio) runs a different adb. Close it, or point XR MultiCast at that adb with `XRMC_ADB=/path/to/adb`.
 - **Black video.** The headset display must be awake to be mirrored.
 - **Sideways or upside-down image.** Use the ↻ button on the stream (saved per headset). Please report the correct angle for your model so the preset can be fixed.
@@ -189,7 +220,8 @@ The scrcpy client/server protocol is internal and changes between scrcpy version
 ```
 src/main/                Electron main process
   main.js                  handler registry (IPC + remote API), app lifecycle
-  adb.js                   adb wrapper (bundled → $XRMC_ADB → PATH)
+  adb.js                   adb wrapper and discovery ($XRMC_ADB → app-installed → existing installs)
+  adb-installer.js         downloads Platform-Tools from Google after the user accepts the terms
   device-manager.js        discovery, identification, USB verification, Wi-Fi, auto-reconnect
   discovery.js             LAN subnet scan for the ADB port
   stream-session.js        scrcpy-server launch + scrcpy v5 protocol demuxer, encoder listing
@@ -220,9 +252,9 @@ Run `npm test` before opening a PR. The code style is plain JavaScript, 2-space 
 
 ## License
 
-XR MultiCast is released under the [MIT License](LICENSE). © 2026 Dylan Smit.
+XR MultiCast is released under the [MIT License](LICENSE). © 2026 Dylan Smit (Dunk Technologies).
 
 **Third-party components**
-- **[scrcpy-server](https://github.com/Genymobile/scrcpy)** (Apache License 2.0, © Genymobile and Romain Vimont) is downloaded by `npm run setup` and bundled in release builds.
-- **Android SDK Platform-Tools** (`adb`) are downloaded from Google and bundled in release builds, under the [Android SDK terms](https://developer.android.com/studio/terms). Review these terms before redistributing builds commercially, or have users install platform-tools themselves.
-- npm dependencies (`ws`, `qrcode`, Electron) carry their own licenses.
+- **[scrcpy-server](https://github.com/Genymobile/scrcpy)** (Apache License 2.0, © Genymobile and Romain Vimont) is downloaded by `npm run setup` and bundled in release builds. Apache 2.0 allows this alongside MIT code.
+- **Android SDK Platform-Tools** (`adb`) are **not** part of this repository or the installers. When needed, the app downloads them from Google on the user's request, after the user accepts the [Android SDK License Agreement](https://developer.android.com/studio/terms).
+- npm dependencies (`ws`, `qrcode`, `extract-zip`, Electron) are MIT-licensed or similar; see their packages.

@@ -1,13 +1,14 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { Adb } = require('./adb');
+const { Adb, resolveAdbPath } = require('./adb');
+const { installPlatformTools } = require('./adb-installer');
 const { Store } = require('./store');
 const { DeviceManager, HEADSET_COLORS } = require('./device-manager');
 const { StreamManager } = require('./stream-manager');
 const { RemoteServer } = require('./remote-server');
 const { localIPv4s } = require('./discovery');
-const { SCRCPY_VERSION, QUALITY_PRESETS, CODECS } = require('./config');
+const { SCRCPY_VERSION, QUALITY_PRESETS, CODECS, ADB_TERMS_URL } = require('./config');
 const { BRANDS } = require('../shared/brands');
 
 let win = null;
@@ -16,6 +17,21 @@ let store;
 let devices;
 let streams;
 let remote;
+let adbInstalling = false;
+
+/** Where the in-app installer puts Google's platform-tools (never bundled with the app). */
+const managedAdbDir = () => path.join(app.getPath('userData'), 'android-platform-tools');
+
+async function adbEnv(ctx = LOCAL) {
+  const version = adb.bin ? await adb.version() : null;
+  return {
+    adbPath: ctx.remote ? null : adb.bin,
+    adbVersion: version,
+    adbAvailable: !!version,
+    adbManaged: !!adb.bin && adb.bin.startsWith(managedAdbDir()),
+    adbTermsUrl: ADB_TERMS_URL,
+  };
+}
 
 function resolveServerPath() {
   const candidates = [
@@ -155,8 +171,7 @@ function registerHandlers() {
     streams: streams.states(),
     env: {
       platform: process.platform,
-      adbPath: ctx.remote ? null : adb.bin,
-      adbVersion: await adb.version(),
+      ...(await adbEnv(ctx)),
       scrcpyVersion: SCRCPY_VERSION,
       serverAvailable: streams.serverAvailable(),
       localIps: localIPv4s().map((i) => i.address),
@@ -199,6 +214,36 @@ function registerHandlers() {
     if (/^https?:\/\//.test(url)) return shell.openExternal(url);
     throw new Error('Blocked URL');
   });
+  handle('adb:install', 'hub', async (_ctx, opts) => {
+    if (!opts || opts.acceptTerms !== true) throw new Error('Accept the Android SDK License Agreement to download adb.');
+    if (adbInstalling) throw new Error('adb is already being installed.');
+    adbInstalling = true;
+    try {
+      store.updateSettings({ adbTermsAcceptedAt: Date.now() });
+      // A running adb server locks its own files on Windows; stop ours before replacing it.
+      if (adb.bin && adb.bin.startsWith(managedAdbDir())) await adb.run(['kill-server'], { timeout: 5000 }).catch(() => {});
+      let last = 0;
+      adb.bin = await installPlatformTools(managedAdbDir(), (p) => {
+        const now = Date.now();
+        if (now - last > 150 || p.received === p.total) {
+          last = now;
+          send('adb:progress', p);
+        }
+      });
+      await devices.restartAdb();
+      return adbEnv();
+    } catch (e) {
+      await devices.restartAdb().catch(() => {});
+      throw e;
+    } finally {
+      adbInstalling = false;
+    }
+  });
+  handle('adb:recheck', 'hub', async () => {
+    adb.bin = resolveAdbPath(managedAdbDir());
+    await devices.restartAdb();
+    return adbEnv();
+  });
   handle('remote:info', 'hub', () => remote.info());
   handle('remote:newPin', 'hub', () => remote.newPin());
   handle('remote:revoke', 'hub', (_ctx, id) => remote.revoke(id));
@@ -229,7 +274,7 @@ if (!app.requestSingleInstanceLock()) {
       fs.copyFileSync(legacyStore, storeFile);
     }
     store = new Store(storeFile);
-    adb = new Adb();
+    adb = new Adb(resolveAdbPath(managedAdbDir()));
     devices = new DeviceManager(adb, store);
     streams = new StreamManager(adb, devices, store, resolveServerPath());
     remote = new RemoteServer({

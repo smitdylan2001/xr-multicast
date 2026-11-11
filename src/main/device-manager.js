@@ -40,7 +40,12 @@ class DeviceManager extends EventEmitter {
     this._polling = false;
   }
 
-  async start() {
+  async startAdbServer() {
+    if (!this.adb.bin) {
+      this.adbError = null; // "not installed" is shown separately, with an install button
+      this.emitChange(true);
+      return;
+    }
     try {
       await this.adb.startServer();
       this.adbError = null;
@@ -48,6 +53,17 @@ class DeviceManager extends EventEmitter {
       this.adbError = `Could not start adb (${this.adb.bin}): ${e.message}`;
       this.emitChange(true);
     }
+  }
+
+  /** Call after adb was installed or its path changed. */
+  async restartAdb() {
+    await this.startAdbServer();
+    await this.poll();
+    this.autoReconnect();
+  }
+
+  async start() {
+    await this.startAdbServer();
     await this.poll();
     this._timers.push(setInterval(() => this.poll(), POLL_MS));
     this._timers.push(setInterval(() => this.refreshAllInfo(), INFO_REFRESH_MS));
@@ -67,7 +83,7 @@ class DeviceManager extends EventEmitter {
   // ---------------------------------------------------------------- polling
 
   async poll() {
-    if (this._polling) return;
+    if (this._polling || !this.adb.bin) return;
     this._polling = true;
     try {
       const list = await this.adb.devices();
@@ -357,7 +373,7 @@ class DeviceManager extends EventEmitter {
   }
 
   async autoReconnect() {
-    if (!this.store.settings.autoReconnectWifi) return;
+    if (!this.store.settings.autoReconnectWifi || !this.adb.bin) return;
     const connected = this.connectedWifiIps();
     const targets = this.store
       .allHeadsets()

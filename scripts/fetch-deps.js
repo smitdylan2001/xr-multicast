@@ -1,14 +1,17 @@
 #!/usr/bin/env node
-// Downloads the runtime dependencies that are bundled with the app:
-//   - Android platform-tools (adb) for the requested platform(s)
-//   - scrcpy-server (the on-headset screen encoder), version pinned in src/main/config.js
+// Downloads build/runtime dependencies:
+//   - scrcpy-server (the on-headset screen encoder, Apache 2.0), version pinned in
+//     src/main/config.js. Always fetched; it is bundled with the app.
+//   - Android platform-tools (adb), ONLY with --with-adb, for local development.
+//     Release builds never bundle adb: the app offers to download it from Google
+//     after the user accepts Google's terms (see src/main/adb-installer.js).
 //
-// Usage: node scripts/fetch-deps.js [--platform linux|win32|darwin|all] [--force]
+// Usage: node scripts/fetch-deps.js [--with-adb] [--platform linux|win32|darwin|all] [--force]
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const https = require('https');
+const { download: fetchFile } = require('../src/main/download');
 const { SCRCPY_SERVER_URL, SCRCPY_VERSION, PLATFORM_TOOLS_URLS } = require('../src/main/config');
 
 const ROOT = path.join(__dirname, '..');
@@ -23,44 +26,20 @@ function parseArgs() {
   for (const p of platforms) {
     if (!PLATFORM_TOOLS_URLS[p]) throw new Error(`Unsupported platform: ${p}`);
   }
-  return { platforms, force: args.includes('--force') };
+  return { platforms, force: args.includes('--force'), withAdb: args.includes('--with-adb') };
 }
 
-function download(url, dest, redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (redirects > 10) return reject(new Error('Too many redirects'));
-    https
-      .get(url, { headers: { 'User-Agent': 'xr-multicast' } }, (res) => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          res.resume();
-          const next = new URL(res.headers.location, url).toString();
-          return resolve(download(next, dest, redirects + 1));
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`GET ${url} -> HTTP ${res.statusCode}`));
-        }
-        const total = Number(res.headers['content-length']) || 0;
-        let received = 0;
-        const tmp = `${dest}.part`;
-        const out = fs.createWriteStream(tmp);
-        res.on('data', (c) => {
-          received += c.length;
-          if (total && process.stdout.isTTY) {
-            process.stdout.write(`\r  ${path.basename(dest)}: ${Math.round((received / total) * 100)}%   `);
-          }
-        });
-        res.pipe(out);
-        out.on('finish', () => {
-          out.close(() => {
-            fs.renameSync(tmp, dest);
-            if (process.stdout.isTTY) process.stdout.write('\n');
-            resolve(dest);
-          });
-        });
-        out.on('error', reject);
-      })
-      .on('error', reject);
+function download(url, dest) {
+  let shown = -1;
+  return fetchFile(url, dest, ({ received, total }) => {
+    const pct = total ? Math.floor((received / total) * 100) : -1;
+    if (process.stdout.isTTY && pct !== shown) {
+      shown = pct;
+      process.stdout.write(`\r  ${path.basename(dest)}: ${pct}%   `);
+    }
+  }).then((r) => {
+    if (process.stdout.isTTY) process.stdout.write('\n');
+    return r;
   });
 }
 
@@ -102,10 +81,13 @@ async function fetchPlatformTools(platform, force) {
 }
 
 (async () => {
-  const { platforms, force } = parseArgs();
+  const { platforms, force, withAdb } = parseArgs();
   fs.mkdirSync(VENDOR, { recursive: true });
   await fetchScrcpyServer(force);
-  for (const p of platforms) await fetchPlatformTools(p, force);
+  if (withAdb) {
+    console.log('By downloading Android SDK Platform-Tools you agree to https://developer.android.com/studio/terms');
+    for (const p of platforms) await fetchPlatformTools(p, force);
+  }
   console.log('Dependencies ready.');
 })().catch((e) => {
   console.error(`\n✗ ${e.message}`);

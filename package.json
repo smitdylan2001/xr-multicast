@@ -21,10 +21,9 @@
   },
   "devDependencies": {
     "electron": "^45.2.3",
-    "electron-builder": "^26.18.0",
-    "extract-zip": "^2.0.1"
+    "electron-builder": "^26.18.0"
   },
-  "author": "Dylan Smit",
+  "author": "Dylan Smit (Dunk XR / Dunk Technologies)",
   "homepage": "https://github.com/smitdylan2001/xr-multicast",
   "desktopName": "xr-multicast.desktop",
   "build": {
@@ -68,10 +67,6 @@
       },
       "extraResources": [
         {
-          "from": "vendor/platform-tools/linux/platform-tools",
-          "to": "platform-tools"
-        },
-        {
           "from": "packaging/linux/70-xr-multicast-adb.rules",
           "to": "linux/70-xr-multicast-adb.rules"
         }
@@ -84,35 +79,25 @@
       "afterInstall": "packaging/linux/after-install.sh",
       "afterRemove": "packaging/linux/after-remove.sh",
       "recommends": [
-        "android-udev-rules"
+        "android-udev-rules",
+        "adb"
       ]
     },
     "win": {
       "target": [
         "nsis",
         "portable"
-      ],
-      "extraResources": [
-        {
-          "from": "vendor/platform-tools/win32/platform-tools",
-          "to": "platform-tools"
-        }
       ]
     },
     "mac": {
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.utilities",
-      "extraResources": [
-        {
-          "from": "vendor/platform-tools/darwin/platform-tools",
-          "to": "platform-tools"
-        }
-      ]
+      "category": "public.app-category.utilities"
     }
   },
   "dependencies": {
+    "extract-zip": "^2.0.1",
     "qrcode": "^1.5.4",
     "ws": "^8.22.2"
   }

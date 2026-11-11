@@ -606,10 +606,14 @@ function onStreamState(st) {
 
 // ---------------------------------------------------------------- sidebar
 
-function batteryHtml(b) {
+function batteryHtml(b, name) {
   if (!b) return '';
   const cls = b.level <= 15 ? 'low' : b.level <= 35 ? 'mid' : '';
-  return `<span class="battery ${cls}" title="Battery ${b.level}%${b.charging ? ' (charging)' : ''}">${icon(b.charging ? 'bolt' : 'battery')}${b.level}%</span>`;
+  const inner = `${icon(b.charging ? 'bolt' : 'battery')}${b.level}%`;
+  if (cls === 'low' && !b.charging) {
+    return `<button type="button" class="battery low fix-btn" data-action="fix" data-fix="battery-low" data-detail="${esc(name || '')}" title="Battery ${b.level}%: click for details">${inner}</button>`;
+  }
+  return `<span class="battery ${cls}" title="Battery ${b.level}%${b.charging ? ' (charging)' : ''}">${inner}</span>`;
 }
 
 function headsetCard(h) {
@@ -680,7 +684,7 @@ function headsetCard(h) {
           <b title="${esc(h.name)}">${esc(h.name)}</b>
           <small><span class="brand-pill" style="--brand-color:${b.color}">${esc(b.name)}</span> ${esc(h.model)}</small>
         </div>
-        ${batteryHtml(h.battery)}
+        ${batteryHtml(h.battery, h.name)}
         ${h.trusted && canControl() ? `<button class="btn icon ghost sm" data-action="menu" data-id="${esc(h.id)}" title="More">${icon('more')}</button>` : ''}
       </div>
       <div class="hs-chips">${chips.join('')}</div>
@@ -709,8 +713,13 @@ function renderSidebar() {
     (S.headsets.length ? '' : `<div class="list-empty">${icon('headset')}<p>No headsets yet.<br/>Plug one in via USB.</p></div>`);
   $('#hs-count').textContent = online.length ? `${online.length} online` : '';
   const err = $('#adb-error');
-  err.classList.toggle('hidden', !S.adbError);
-  err.textContent = S.adbError ? `adb: ${S.adbError}` : '';
+  const adbMissing = S.env && S.env.adbAvailable === false && !S.env.remote;
+  err.classList.toggle('hidden', !S.adbError && !adbMissing);
+  err.innerHTML = adbMissing
+    ? `<button type="button" class="banner-btn" data-action="fix" data-fix="adb-missing">${icon('alert')}<span><b>adb is not installed.</b> Headsets can't connect yet. <u>Install it</u></span></button>`
+    : S.adbError
+      ? `<button type="button" class="banner-btn" data-action="fix" data-fix="adb-error" data-detail="${esc(S.adbError)}">${icon('alert')}<span><b>adb problem:</b> ${esc(S.adbError)} <u>How to fix</u></span></button>`
+      : '';
   updateEmptyState();
 }
 
@@ -838,7 +847,7 @@ function openEdit(id) {
         .map((c) => {
           const encs = r.encoders.filter((e) => e.codec === c && !e.alias);
           const name = S.codecs[c].label;
-          if (!encs.length) return `<div>${esc(name)}: <span class="bad">not available</span></div>`;
+          if (!encs.length) return `<div>${esc(name)}: <span class="muted">not available (H.264 is used instead)</span></div>`;
           const hw = encs.filter((e) => e.hw);
           return `<div>${esc(name)}: <b>${hw.length ? 'hardware' : 'software only'}</b> <span class="muted">(${encs.map((e) => esc(e.name)).join(', ')})</span></div>`;
         })
@@ -987,7 +996,7 @@ function decoderSummary() {
   const parts = Object.entries(S.codecs).map(([k, c]) => {
     const d = S.decoderSupport[k];
     const name = c.label.replace(/ \(.*\)/, '');
-    if (!d || !d.any) return `<span class="bad">${esc(name)} ✗</span>`;
+    if (!d || !d.any) return `<span class="muted">${esc(name)} not supported</span>`;
     return `${esc(name)} ${d.hw ? '(hardware)' : '(software)'}`;
   });
   return parts.join(', ') || 'unknown';
@@ -999,7 +1008,7 @@ function tenBitSummary() {
     ['av1_10', 'AV1 10-bit'],
   ].map(([k, name]) => {
     const d = S.decoderSupport[k];
-    return d && d.any ? `${name} ${d.hw ? '(hardware)' : '(software)'}` : `<span class="bad">${name} ✗</span>`;
+    return d && d.any ? `${name} ${d.hw ? '(hardware)' : '(software)'}` : `<span class="muted">${name} not supported</span>`;
   });
   return parts.join(', ');
 }
@@ -1067,11 +1076,11 @@ function bindRemoteBlock(body) {
   const draw = () => {
     if (!info) return;
     if (info.failed) {
-      live.innerHTML = `<span class="bad small">${esc(info.failed)}</span>`;
+      live.innerHTML = fixLink('Remote access status unavailable', 'remote-error', { detail: info.failed });
       return;
     }
     const status = info.error
-      ? `<span class="bad">${icon('alert')} ${esc(info.error)}</span>`
+      ? fixLink(`Could not start: ${info.error}`, 'remote-error', { detail: info.error })
       : info.running
         ? `<span class="ok-text">${icon('check')} Running on port ${info.port} · ${info.viewers} viewer${info.viewers === 1 ? '' : 's'} connected</span>`
         : `<span class="muted">${info.enabled ? 'Starting…' : 'Off. Tick the box above and Save to start.'}</span>`;
@@ -1191,7 +1200,12 @@ function openSettings() {
     <label class="check"><input type="checkbox" id="s-oneeye" ${s.singleEyeStream ? 'checked' : ''}/> <span><b>Stream one eye only</b><br/><small class="muted">The headset crops to the selected eye before encoding: about twice the sharpness at the same bandwidth. "Both eyes" view is unavailable while on. Applies to new streams.</small></span></label>
     ${remoteBlock(s)}
     <h4>About</h4>
-    <p class="muted small">XR MultiCast ${esc(S.env.appVersion)} · adb ${esc(S.env.adbVersion || 'not found')} (${esc(S.env.adbPath)}) · scrcpy-server ${esc(S.env.scrcpyVersion)} ${S.env.serverAvailable ? '✓' : '— missing, run "npm run setup"'}</p>`;
+    <div class="about-row">
+      <span class="muted small">XR MultiCast ${esc(S.env.appVersion)} · scrcpy-server ${esc(S.env.scrcpyVersion)} ·
+        adb ${S.env.adbAvailable ? `${esc(S.env.adbVersion)} <span title="${esc(S.env.adbPath || '')}">(${S.env.adbManaged ? 'installed by XR MultiCast' : 'found on this computer'})</span>` : 'not installed'}</span>
+      <button type="button" class="btn sm" data-action="adb-install">${icon('usb')}${S.env.adbManaged ? 'Update adb' : S.env.adbAvailable ? 'Install managed adb' : 'Install adb'}</button>
+    </div>
+    <p class="muted small">Made by <b>Dunk XR</b> (Dunk Technologies). Whitelabel and custom hardware solutions: <button type="button" class="link-btn" data-action="ext" data-url="https://dunktechnologies.com">dunktechnologies.com</button></p>`;
   bindRemoteBlock(body);
   openModal({
     title: 'Settings',
@@ -1402,19 +1416,169 @@ function frameLoop(now) {
   requestAnimationFrame(frameLoop);
 }
 
+// ---------------------------------------------------------- problems & fixes
+//
+// Colour code used everywhere: green (.good) = fine, amber (.warn) = works with a
+// caveat, red (.bad) = broken. Every amber/red status is a button explaining the fix.
+
+function fixLink(label, topic, { level = 'bad', detail = '', iconName = 'alert' } = {}) {
+  return `<button type="button" class="fix-link ${level}" data-action="fix" data-fix="${esc(topic)}" data-detail="${esc(detail)}" title="Click for details and how to fix it">${icon(iconName)}<span>${esc(label)}</span></button>`;
+}
+
+const ADB_MANUAL = {
+  linux: ['Ubuntu / Debian: <code>sudo apt install adb</code>', 'Fedora: <code>sudo dnf install android-tools</code>', 'Arch: <code>sudo pacman -S android-tools</code>'],
+  darwin: ['Homebrew: <code>brew install android-platform-tools</code>'],
+  win32: ['winget: <code>winget install Google.PlatformTools</code>'],
+};
+
+const hubOnly = (what) => `<p class="muted">${what} can only be done on the hub computer${S.env.remote ? '' : '.'}</p>`;
+
+const FIXES = {
+  'adb-missing': () => ({
+    title: 'adb is not installed',
+    body: `<p>XR MultiCast talks to headsets through <b>adb</b> (Android Debug Bridge), part of Google's Android SDK Platform-Tools. It isn't shipped with the app because it is covered by Google's licence rather than MIT.</p>
+      ${S.env.remote ? hubOnly('Installing adb') : `<p>Click <b>Install adb…</b> to download the official package from Google (you'll be asked to accept Google's terms first), or install it yourself and click <b>Check again</b>:</p>
+      <ul>${(ADB_MANUAL[S.env.platform] || []).map((l) => `<li>${l}</li>`).join('')}</ul>`}`,
+    actions: S.env.remote ? null : [
+      { label: 'Check again', onClick: () => recheckAdb() },
+      { label: 'Install adb…', kind: 'primary', onClick: () => setTimeout(openAdbInstall, 0) },
+    ],
+  }),
+  'adb-error': (detail) => ({
+    title: 'adb reported a problem',
+    body: `<pre class="fix-detail">${esc(detail || 'Unknown error')}</pre>
+      <ul>
+        <li><b>"server version doesn't match"</b>: another tool (SideQuest, Meta Quest Developer Hub, Android Studio, scrcpy) is running a different adb. Close it, then click <b>Check again</b>. Or start XR MultiCast with <code>XRMC_ADB=/path/to/that/adb</code> so both use the same one.</li>
+        <li><b>"no permissions"</b> (Linux): install the USB rule: <code>bash packaging/linux/install-user.sh --system</code> (or the .deb), then re-plug the headset.</li>
+        <li><b>Can't start / not found</b>: reinstall adb with the button below.</li>
+      </ul>`,
+    actions: S.env.remote ? null : [
+      { label: 'Reinstall adb…', onClick: () => setTimeout(openAdbInstall, 0) },
+      { label: 'Check again', kind: 'primary', onClick: () => recheckAdb() },
+    ],
+  }),
+  'server-missing': () => ({
+    title: 'scrcpy-server is missing',
+    body: `<p>The small screen-capture program that runs on the headset (scrcpy-server, Apache 2.0) should ship with the app but wasn't found, so streams can't start.</p>
+      <ul><li><b>Installed app:</b> reinstall XR MultiCast.</li><li><b>Running from source:</b> run <code>npm run setup</code> in the project folder and restart.</li></ul>`,
+  }),
+  'sandbox-off': () => ({
+    title: 'Chromium sandbox is off',
+    body: `<p>XR MultiCast works normally. The sandbox is an extra security layer that isolates the video decoders and UI; it is off because Ubuntu 24.04+ only allows it for apps that have an AppArmor profile.</p>
+      <p>Turn it on (once, asks for your password), from the XR MultiCast project folder:</p>
+      <pre class="fix-detail">bash packaging/linux/install-user.sh --system</pre>
+      <p class="muted">Or install the .deb package, which includes the profile. Restart XR MultiCast afterwards; this turns green.</p>`,
+  }),
+  'remote-error': (detail) => ({
+    title: 'Remote access could not start',
+    body: `<pre class="fix-detail">${esc(detail || 'Unknown error')}</pre>
+      <ul>
+        <li><b>Address/port in use</b>: another program uses this port. Pick a different port in <b>Settings → Remote access</b> (e.g. 8788) and Save.</li>
+        <li><b>Permission denied</b>: ports below 1024 need admin rights; use 1024–65535.</li>
+        <li>Tablets can't connect while it runs? Allow the port in your firewall and make sure they're on the same network.</li>
+      </ul>`,
+    actions: S.env.remote ? null : [{ label: 'Open Settings', kind: 'primary', onClick: () => setTimeout(openSettings, 0) }],
+  }),
+  'battery-low': (detail) => ({
+    title: 'Headset battery is low',
+    body: `<p>${esc(detail || 'This headset')} is low on battery. Streaming keeps the display and video encoder busy and drains it faster.</p>
+      <ul><li>Plug the headset into a charger or a powered USB port. Casting over USB also charges it.</li><li>Lower the quality preset in Settings to reduce the load.</li></ul>`,
+  }),
+};
+
+function openFix(topic, detail) {
+  const f = FIXES[topic];
+  if (!f) return;
+  const d = f(detail);
+  openModal({ title: d.title, body: d.body, actions: d.actions || [{ label: 'Close', kind: 'primary' }] });
+}
+
+function applyAdbEnv(env) {
+  Object.assign(S.env, env);
+  renderStatusBar();
+  renderSidebar();
+}
+
+async function recheckAdb() {
+  const env = await run(xr.adbRecheck());
+  if (!env) return true;
+  applyAdbEnv(env);
+  if (env.adbAvailable) {
+    toast(`Using adb ${env.adbVersion}.`, 'ok');
+    return false;
+  }
+  toast('adb still not found.', 'warn');
+  return true;
+}
+
+function openAdbInstall() {
+  if (S.env.remote) return openFix('adb-missing');
+  const platform = { linux: 'Linux', darwin: 'macOS', win32: 'Windows' }[S.env.platform] || S.env.platform;
+  const body = document.createElement('div');
+  body.innerHTML = `
+    <p>XR MultiCast needs <b>adb</b> from Google's <b>Android SDK Platform-Tools</b> to connect to headsets. It is not included with XR MultiCast (MIT); it is provided by Google under its own terms.</p>
+    <p><b>Install</b> downloads the official ${esc(platform)} package directly from Google (<code>dl.google.com</code>) into XR MultiCast's own data folder. Nothing is installed system-wide, and it is used only by this app.</p>
+    <div class="terms-box">
+      <b>Android Software Development Kit License Agreement</b>
+      <p>Platform-Tools are licensed by Google under the Android SDK License Agreement. Please read it before continuing.</p>
+      <button type="button" class="btn sm" data-action="ext" data-url="${esc(S.env.adbTermsUrl || 'https://developer.android.com/studio/terms')}">${icon('help')}Read the agreement</button>
+    </div>
+    <label class="check"><input type="checkbox" id="adb-accept" /> <span>I have read and agree to the <b>Android Software Development Kit License Agreement</b>.</span></label>
+    <div id="adb-progress-wrap" hidden><progress id="adb-progress" max="1" value="0"></progress><span id="adb-progress-text" class="muted small"></span></div>
+    <details class="manual"><summary>Prefer to install adb yourself?</summary>
+      <ul>${(ADB_MANUAL[S.env.platform] || []).map((l) => `<li>${l}</li>`).join('')}</ul>
+      <p class="muted small">Then click <b>Check again</b>. XR MultiCast also finds adb from an Android SDK or Android Studio install.</p>
+    </details>`;
+  const m = openModal({
+    title: S.env.adbAvailable ? 'Update Android Platform-Tools (adb)' : 'Install Android Platform-Tools (adb)',
+    body,
+    actions: [
+      { label: 'Check again', onClick: () => recheckAdb() },
+      { label: 'Not now' },
+      {
+        label: 'Agree & install',
+        kind: 'primary',
+        onClick: async (el) => {
+          if (!$('#adb-accept', el).checked) return true;
+          $('#adb-progress-wrap', el).hidden = false;
+          $('#adb-progress-text', el).textContent = 'Downloading from Google…';
+          const env = await run(xr.adbInstall({ acceptTerms: true }));
+          $('#adb-progress-wrap', el).hidden = true;
+          if (!env) return true;
+          applyAdbEnv(env);
+          toast(`adb ${env.adbVersion} installed.`, 'ok');
+          return false;
+        },
+      },
+    ],
+  });
+  const install = [...m.el.querySelectorAll('.modal-actions .btn')].pop();
+  install.disabled = true;
+  $('#adb-accept', m.el).addEventListener('change', (e) => (install.disabled = !e.target.checked));
+}
+
+function onAdbProgress(p) {
+  const bar = $('#adb-progress');
+  if (!bar) return;
+  bar.max = p.total || 1;
+  bar.value = p.received;
+  const mb = (n) => (n / 1048576).toFixed(1);
+  $('#adb-progress-text').textContent = p.total ? `${mb(p.received)} / ${mb(p.total)} MB` : `${mb(p.received)} MB`;
+}
+
 function renderStatusBar() {
   const e = S.env;
-  $('#status-adb').innerHTML = `${icon('usb')} adb ${esc(e.adbVersion || 'not found')}`;
-  $('#status-adb').title = e.adbPath;
+  const adbEl = $('#status-adb');
+  adbEl.innerHTML = e.adbAvailable ? `<span class="good">${icon('check')} adb ${esc(e.adbVersion)}</span>` : fixLink('adb not installed', 'adb-missing');
+  adbEl.title = e.adbPath || '';
   $('#status-server').innerHTML = e.serverAvailable
-    ? `${icon('check')} scrcpy-server ${esc(e.scrcpyVersion)}`
-    : `<span class="bad">${icon('alert')} scrcpy-server missing — run "npm run setup"</span>`;
+    ? `<span class="good">${icon('check')} scrcpy-server ${esc(e.scrcpyVersion)}</span>`
+    : fixLink('scrcpy-server missing', 'server-missing');
   const sb = $('#status-sandbox');
-  sb.hidden = e.sandboxed !== false;
-  sb.innerHTML = `<span class="bad">${icon('alert')} Chromium sandbox off</span>`;
-  sb.title =
-    'Ubuntu blocks the sandbox until an AppArmor profile is installed. Run once in the project folder:\n' +
-    '  bash packaging/linux/install-user.sh --system\n(or install the .deb package, which includes it)';
+  sb.hidden = e.remote || e.platform !== 'linux';
+  sb.innerHTML = e.sandboxed !== false
+    ? `<span class="good" title="Chromium security sandbox is active">${icon('shield')} Sandbox on</span>`
+    : fixLink('Sandbox off', 'sandbox-off', { level: 'warn', iconName: 'shield' });
   $('#status-ip').innerHTML = e.localIps && e.localIps.length ? `${icon('wifi')} ${e.remote ? 'Hub' : 'This PC'}: ${e.localIps.map(esc).join(', ')}` : `${icon('wifi')} No network`;
   renderRemoteStatus();
 }
@@ -1431,8 +1595,10 @@ function renderRemoteStatus(st) {
   const r = S.remoteStatus;
   el.hidden = !r || !r.enabled;
   if (!r || !r.enabled) return;
-  el.innerHTML = r.error ? `<span class="bad">${icon('alert')} Remote: ${esc(r.error)}</span>` : `${icon('eye')} Remote: ${r.viewers} viewer${r.viewers === 1 ? '' : 's'}`;
-  el.title = 'Remote access for tablets & phones — open Settings';
+  el.innerHTML = r.error
+    ? fixLink('Remote access failed', 'remote-error', { detail: r.error })
+    : `<span class="good">${icon('eye')} Remote: ${r.viewers} viewer${r.viewers === 1 ? '' : 's'}</span>`;
+  el.title = r.error ? '' : 'Remote access for tablets & phones is running';
 }
 
 function bindGlobal() {
@@ -1512,6 +1678,18 @@ function bindGlobal() {
       case 'forget':
         confirmForget(id);
         break;
+      case 'fix':
+        openFix(el.dataset.fix, el.dataset.detail);
+        break;
+      case 'adb-install':
+        openAdbInstall();
+        break;
+      case 'ext':
+        if (/^https:\/\//.test(el.dataset.url || '')) {
+          if (S.env.remote) window.open(el.dataset.url, '_blank', 'noopener');
+          else run(xr.openExternal(el.dataset.url));
+        }
+        break;
       default:
         break;
     }
@@ -1545,6 +1723,7 @@ async function init() {
   const early = { snap: null, states: [] };
   xr.onDevices((snap) => (ready ? onDevices(snap) : (early.snap = snap)));
   xr.onNotice((n) => toast(n.message, n.level));
+  if (xr.onAdbProgress) xr.onAdbProgress(onAdbProgress);
   xr.onStreamState((st) => (ready ? onStreamState(st) : early.states.push(st)));
   xr.onStreamLog((id, line) => console.debug(`[${id}] ${line}`));
   xr.onPacket((id, isConfig, isKey, pts, data) => {
@@ -1578,7 +1757,9 @@ async function init() {
   ready = true;
   layoutGrid();
   requestAnimationFrame(frameLoop);
-  if (!S.env.serverAvailable) toast('scrcpy-server is missing — run "npm run setup" before casting.', 'error', 12000);
+  if (!S.env.serverAvailable) toast('scrcpy-server is missing. Click it in the status bar for how to fix it.', 'error', 12000);
+  // First run without adb: offer the installer (with Google's terms) right away.
+  if (!S.env.remote && S.env.adbAvailable === false) openAdbInstall();
 }
 
 init().catch((e) => {

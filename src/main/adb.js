@@ -1,19 +1,50 @@
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-function resolveAdbPath() {
-  const exe = process.platform === 'win32' ? 'adb.exe' : 'adb';
-  const candidates = [];
-  if (process.env.XRMC_ADB) candidates.push(process.env.XRMC_ADB);
-  if (process.env.XRVIEW_ADB) candidates.push(process.env.XRVIEW_ADB); // previous app name
-  if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'platform-tools', exe));
-  candidates.push(path.join(__dirname, '..', '..', 'vendor', 'platform-tools', process.platform, 'platform-tools', exe));
-  for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c;
+const ADB_EXE = process.platform === 'win32' ? 'adb.exe' : 'adb';
+
+/** Places adb commonly lives besides PATH (GUI apps on macOS don't inherit the shell PATH). */
+function commonAdbDirs() {
+  const home = os.homedir();
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  if (process.platform === 'darwin') dirs.push('/opt/homebrew/bin', '/usr/local/bin', path.join(home, 'Library/Android/sdk/platform-tools'));
+  if (process.platform === 'linux') dirs.push('/usr/bin', '/usr/local/bin', path.join(home, 'Android/Sdk/platform-tools'));
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    dirs.push(path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'platform-tools'));
+    dirs.push(path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links'));
   }
-  return exe; // fall back to whatever adb is on PATH
+  if (process.env.ANDROID_HOME) dirs.push(path.join(process.env.ANDROID_HOME, 'platform-tools'));
+  if (process.env.ANDROID_SDK_ROOT) dirs.push(path.join(process.env.ANDROID_SDK_ROOT, 'platform-tools'));
+  return dirs;
 }
+
+/**
+ * Find adb. Order: explicit override, the copy installed by the app (managedDir),
+ * a dev/whitelabel bundled copy, then an adb the user already has.
+ * @returns {string|null}
+ */
+function resolveAdbPath(managedDir) {
+  const override = process.env.XRMC_ADB || process.env.XRVIEW_ADB; /* XRVIEW_: previous app name */
+  // An explicit override is used exclusively, so a missing file shows up as "not installed".
+  if (override) return fs.existsSync(override) ? override : null;
+  const candidates = [];
+  if (managedDir) candidates.push(path.join(managedDir, 'platform-tools', ADB_EXE));
+  if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'platform-tools', ADB_EXE));
+  candidates.push(path.join(__dirname, '..', '..', 'vendor', 'platform-tools', process.platform, 'platform-tools', ADB_EXE));
+  for (const dir of commonAdbDirs()) candidates.push(path.join(dir, ADB_EXE));
+  for (const c of candidates) {
+    try {
+      if (c && fs.statSync(c).isFile()) return c;
+    } catch {
+      /* not there */
+    }
+  }
+  return null;
+}
+
+const NO_ADB = 'adb is not installed. Click "adb not installed" in the status bar to install it.';
 
 /** Is this adb serial a network transport (tcpip or mDNS) rather than USB? */
 function isNetworkSerial(serial) {
@@ -22,11 +53,12 @@ function isNetworkSerial(serial) {
 
 class Adb {
   constructor(bin = resolveAdbPath()) {
-    this.bin = bin;
+    this.bin = bin || null;
   }
 
   run(args, { serial, timeout = 15000, maxBuffer = 8 * 1024 * 1024 } = {}) {
     const full = serial ? ['-s', serial, ...args] : args;
+    if (!this.bin) return Promise.reject(new Error(NO_ADB));
     return new Promise((resolve, reject) => {
       execFile(this.bin, full, { timeout, maxBuffer, windowsHide: true }, (err, stdout, stderr) => {
         if (err) {
@@ -46,6 +78,7 @@ class Adb {
 
   spawn(args, serial) {
     const full = serial ? ['-s', serial, ...args] : args;
+    if (!this.bin) throw new Error(NO_ADB);
     return spawn(this.bin, full, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   }
 
