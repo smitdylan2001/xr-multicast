@@ -427,13 +427,18 @@ pub enum Mode {
     Demo { headsets: usize },
 }
 
-/// Where to find scrcpy-server: next to the executable, `XRMC_SCRCPY_SERVER`, then the repository's `vendor/`.
+/// Where to find scrcpy-server: next to the executable (macOS: also the app bundle's
+/// `Resources/`), `XRMC_SCRCPY_SERVER`, then the repository's `vendor/`.
 pub fn find_scrcpy_server() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
         candidates.push(dir.join("scrcpy-server"));
+        // macOS app bundle: Contents/MacOS/xr-multicast → Contents/Resources/scrcpy-server.
+        if cfg!(target_os = "macos") {
+            candidates.push(dir.join("../Resources/scrcpy-server"));
+        }
     }
     if let Some(p) = std::env::var_os("XRMC_SCRCPY_SERVER") {
         candidates.push(PathBuf::from(p));

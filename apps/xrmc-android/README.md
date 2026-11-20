@@ -16,8 +16,8 @@ The build script runs these steps:
 
 1. cargo-ndk builds `libxrmc_android.so` (plus `libc++_shared.so`) into `android/app/src/main/jniLibs`.
 2. It copies scrcpy-server v5.0.1 into the APK assets and `build/icon.png` in as the launcher icon.
-3. It runs `./gradlew assembleRelease`, signed with the local debug key.
-4. It copies the APK to `dist-native/android/`.
+3. It runs `./gradlew assembleRelease`. With several ABIs it builds ABI splits plus a universal APK.
+4. It copies the APKs to `dist-native/android/`: `xr-multicast-<version>-android-universal.apk` and `…-android-arm64-v8a.apk` (one ABI: `…-android-<abi>.apk`; debug builds add `-debug`).
 
 Requirements:
 
@@ -27,7 +27,7 @@ Requirements:
 
 Rust builds into `$CARGO_TARGET_DIR`, by default `~/.cache/xrmc-target-android`.
 
-The app needs Android 13+ (minSdk 33) and Vulkan 1.1. Use your own keystore for distribution.
+The app needs Android 13+ (minSdk 33) and Vulkan 1.1. Release APKs are signed with your key when `XRMC_KEYSTORE`, `XRMC_KEYSTORE_PASSWORD`, `XRMC_KEY_ALIAS` and `XRMC_KEY_PASSWORD` are set (see [docs/releasing.md](../../docs/releasing.md)), otherwise with the local debug key.
 
 ## Layout
 
@@ -54,7 +54,7 @@ Decoding lives in `crates/xrmc-decode/src/android/`:
 1. Start two AVDs on private ports:
    - Hub: `emulator -avd xrmc_api35 -port 5570 -read-only -no-snapshot -gpu swiftshader_indirect -no-window`
    - "Headset": the same command with `-port 5572`.
-2. Install the APK on the hub: `adb -s emulator-5570 install -r -g dist-native/android/xr-multicast-*-universal-release.apk`.
+2. Install the APK on the hub: `adb -s emulator-5570 install -r -g dist-native/android/xr-multicast-*-android-universal.apk`.
 3. Launch it pointed at the other emulator's adbd:
 
    ```bash

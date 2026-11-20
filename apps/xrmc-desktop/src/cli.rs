@@ -145,6 +145,9 @@ impl Cli {
             .with_inner_size(size)
             .with_min_inner_size([400.0, 320.0])
             .with_fullscreen(full);
+        if let Some(icon) = window_icon() {
+            viewport = viewport.with_icon(icon);
+        }
         if self.kiosk {
             viewport = viewport.with_decorations(false);
         }
@@ -167,6 +170,25 @@ impl Cli {
         }
         options
     }
+}
+
+/// The app icon (`build/icon.png`) for the window and taskbar.
+fn window_icon() -> Option<egui::IconData> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(
+        &include_bytes!("../../../build/icon.png")[..],
+    ));
+    let mut reader = decoder.read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(info.buffer_size());
+    Some(egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    })
 }
 
 /// Parse arguments and run the app (blocks until the window closes).
@@ -235,6 +257,12 @@ mod tests {
         assert_eq!(o.ui_scale, Some(1.5));
         assert_eq!(parse_size("800x1280"), Some([800.0, 1280.0]));
         assert_eq!(parse_size("nope"), None);
+    }
+
+    #[test]
+    fn window_icon_decodes() {
+        let icon = window_icon().unwrap();
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
     }
 
     #[test]

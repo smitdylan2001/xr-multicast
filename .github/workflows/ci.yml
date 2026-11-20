@@ -1,17 +1,85 @@
 name: CI
 
-# Manual only, to save CI minutes: run `npm test` locally. Start it from Actions → CI → Run workflow.
+# Pull requests and manual runs only (no push trigger, to save CI minutes).
+# Release packages are built by release.yml.
 on:
+  pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
 jobs:
-  test:
+  rust:
+    name: Rust (fmt, clippy, tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+
+  check:
+    name: cargo check (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-msvc
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          - name: macos
+            os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: ${{ matrix.name }}
+      - shell: bash
+        run: |
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo check --locked --workspace --all-targets --target "$t"
+          done
+
+  android:
+    name: cargo check (android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: taiki-e/install-action@v2.90.6
+        with:
+          tool: cargo-ndk@4.1.2
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: android
+      # The runner's preinstalled NDK (r27+) is enough for a check build.
+      - run: cargo ndk -t arm64-v8a -P 33 check --locked -p xrmc-android
+
+  legacy-electron:
+    name: Legacy Electron tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test

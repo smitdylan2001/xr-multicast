@@ -1,43 +1,279 @@
 name: Release
 
-# Push a tag like v1.0.0 to build installers for all platforms and attach them to a GitHub release.
+# Builds the native app for every platform (scripts in packaging/native/, see packaging/README.md).
+# - Push a tag vX.Y.Z (matching the version in Cargo.toml) → all packages + a DRAFT GitHub release.
+# - Actions → Release → Run workflow: builds the packages as a workflow artifact only, unless
+#   "build_only" is unticked (then it also creates a draft release for v<Cargo.toml version>).
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: Only build the packages (no GitHub release)
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            script: dist:linux
-          - os: windows-latest
-            script: dist:win
-          - os: macos-latest
-            script: dist:mac
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: Linux (x86_64 + aarch64, tar.gz + deb)
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: mlugg/setup-zig@v2.2.1
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run ${{ matrix.script }} -- --publish never
+          version: 0.17.1
+      - uses: taiki-e/install-action@v2.90.6
+        with:
+          tool: cargo-zigbuild@0.24.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: linux
+      - run: packaging/native/build-linux.sh all
         env:
-          # Unsigned builds; add signing secrets here later if needed.
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - uses: softprops/action-gh-release@v2
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Smoke test and package contents
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          d=dist-native/xr-multicast-$v-linux-x86_64
+          "$d/xr-multicast" --version
+          "$d/xrmc" --help >/dev/null
+          file dist-native/xr-multicast-$v-linux-*/xr-multicast
+          for f in dist-native/xr-multicast-$v-linux-*/xr-multicast; do
+            echo "$f needs glibc $(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          done
+          for p in dist-native/*.deb; do dpkg-deb -I "$p"; dpkg-deb -c "$p"; done
+      - uses: actions/upload-artifact@v7.0.2
         with:
-          draft: true
-          files: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.exe
-            dist/*.dmg
+          name: linux
+          if-no-files-found: error
+          path: |
+            dist-native/*.tar.gz
+            dist-native/*.deb
+
+  windows:
+    name: Windows (x64, zip + installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: windows
+      - run: ./packaging/native/build-windows.ps1
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}\target
+      - name: Smoke test and package contents
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $d = "dist-native\xr-multicast-$v-windows-x64"
+          Get-ChildItem -Recurse $d | Format-Table Length, FullName -AutoSize | Out-String -Width 200
+          & "$d\xrmc.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "xrmc.exe failed" }
+          foreach ($f in 'avcodec-62.dll', 'avutil-60.dll', 'swresample-6.dll', 'LICENSE.txt', 'README.txt') {
+            if (-not (Test-Path "$d\ffmpeg\$f")) { throw "missing ffmpeg\$f" }
+          }
+      - name: Offscreen render (WARP; informational)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $env:RUST_LOG = 'info'
+          $p = Start-Process -FilePath "dist-native\xr-multicast-$v-windows-x64\xr-multicast.exe" -Wait -PassThru -NoNewWindow `
+            -ArgumentList '--demo', '3', '--offscreen', '800x600', '--screenshot', "$env:RUNNER_TEMP\windows.png", '--exit-after', '5' `
+            -RedirectStandardError "$env:RUNNER_TEMP\windows-stderr.txt"
+          Get-Content "$env:RUNNER_TEMP\windows-stderr.txt"
+          "exit code $($p.ExitCode)"
+          Get-Item "$env:RUNNER_TEMP\windows.png"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows
+          if-no-files-found: error
+          path: |
+            dist-native/*.zip
+            dist-native/*-setup.exe
+
+  macos:
+    name: macOS (universal dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: macos
+      - run: packaging/native/build-macos.sh
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Smoke test and package contents
+        run: |
+          app="dist-native/macos/XR MultiCast.app"
+          find "$app" -type f -exec ls -l {} +
+          file "$app/Contents/MacOS/xr-multicast"
+          "$app/Contents/MacOS/xr-multicast" --version
+          codesign -dv "$app" 2>&1
+          hdiutil imageinfo dist-native/*.dmg | head -20
+      - name: Offscreen render (informational)
+        continue-on-error: true
+        run: |
+          RUST_LOG=info "dist-native/macos/XR MultiCast.app/Contents/MacOS/xr-multicast" --demo 3 \
+            --offscreen 800x600 --screenshot "$RUNNER_TEMP/macos.png" --exit-after 5
+          ls -l "$RUNNER_TEMP/macos.png"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: macos
+          if-no-files-found: error
+          path: dist-native/*.dmg
+
+  android:
+    name: Android (APKs)
+    runs-on: ubuntu-latest
+    outputs:
+      signing: ${{ steps.keystore.outputs.signing }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Android SDK packages (platform 36, build-tools 36.0.0, NDK r27c)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2.90.6
+        with:
+          tool: cargo-ndk@4.1.2
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: android
+      - name: Release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "XRMC_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "signing=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set: the APKs are signed with a throwaway debug key"
+            echo "signing=debug" >> "$GITHUB_OUTPUT"
+          fi
+      - run: apps/xrmc-android/build.sh release --abi all
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          XRMC_ANDROID_ENV: /dev/null
+          XRMC_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          XRMC_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          XRMC_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Check APKs
+        run: |
+          bt="$ANDROID_HOME/build-tools/36.0.0"
+          for a in dist-native/android/*.apk; do
+            echo "== $a ($(du -h "$a" | cut -f1))"
+            "$bt/aapt2" dump badging "$a" | grep -E "^package:|native-code"
+            "$bt/apksigner" verify --print-certs "$a" | grep -E "Signer #1 certificate (DN|SHA-256)"
+          done
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: android
+          if-no-files-found: error
+          path: dist-native/android/*.apk
+
+  release:
+    name: Checksums and draft release
+    needs: [linux, windows, macos, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -l
+      - name: Release notes
+        env:
+          SIGNING: ${{ needs.android.outputs.signing }}
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          # The CHANGELOG.md section for this version: from its "## ... <v>" heading to the next "## ".
+          notes=""
+          if [ -f CHANGELOG.md ]; then
+            notes=$(awk -v v="$v" '
+              /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
+              found { print }' CHANGELOG.md)
+          fi
+          {
+            if [ -n "$(echo "$notes" | tr -d '[:space:]')" ]; then
+              echo "$notes"
+            else
+              echo "XR MultiCast $v for Windows, macOS, Linux (x86_64 and aarch64) and Android."
+              echo
+              echo "See the README for installation instructions."
+            fi
+            echo
+            echo "### Downloads"
+            echo
+            echo "| Platform | File |"
+            echo "|---|---|"
+            echo "| Windows 10/11 (x64) | \`xr-multicast-$v-windows-x64-setup.exe\` (installer) or \`xr-multicast-$v-windows-x64.zip\` (portable) |"
+            echo "| macOS 11+ (Apple Silicon and Intel) | \`xr-multicast-$v-macos-universal.dmg\` |"
+            echo "| Debian / Ubuntu / Raspberry Pi OS | \`xr-multicast_${v}_amd64.deb\`, \`xr-multicast_${v}_arm64.deb\` |"
+            echo "| Other Linux | \`xr-multicast-$v-linux-x86_64.tar.gz\`, \`xr-multicast-$v-linux-aarch64.tar.gz\` |"
+            echo "| Android 13+ | \`xr-multicast-$v-android-arm64-v8a.apk\` (phones/tablets) or \`xr-multicast-$v-android-universal.apk\` |"
+            echo
+            echo "The Windows and macOS builds are not code-signed: Windows SmartScreen may warn (More info → Run anyway); on macOS right-click the app → Open the first time, or run \`xattr -dr com.apple.quarantine \"/Applications/XR MultiCast.app\"\`."
+            if [ "$SIGNING" != release ]; then
+              echo
+              echo "> **Note:** the Android APKs in this release are signed with a throwaway debug key (no release keystore configured). Uninstall a previous version before installing, and expect future releases to need the same."
+            fi
+            echo
+            echo "Verify downloads with \`sha256sum -c SHA256SUMS.txt\`."
+          } > release-notes.md
+          cat release-notes.md
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: xr-multicast-release
+          path: |
+            dist/*
+            release-notes.md
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.build_only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then tag="v$VERSION"; fi
+          if [ "$tag" != "v$VERSION" ]; then
+            echo "::error::tag $tag does not match the version in Cargo.toml ($VERSION)"
+            exit 1
+          fi
+          gh release create "$tag" --draft --target "$GITHUB_SHA" \
+            --title "XR MultiCast $VERSION" --notes-file release-notes.md dist/*

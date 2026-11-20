@@ -4438,6 +4438,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4526,7 +4535,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xrmc-adb"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -4542,7 +4551,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-android"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -4562,7 +4571,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-cli"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -4576,7 +4585,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-core"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytes",
  "if-addrs",
@@ -4593,7 +4602,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-decode"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "libloading",
  "ndk-sys",
@@ -4605,7 +4614,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-desktop"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytes",
  "clap",
@@ -4617,6 +4626,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "winresource",
  "xrmc-adb",
  "xrmc-core",
  "xrmc-decode",
@@ -4627,7 +4637,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-hub"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -4638,14 +4648,14 @@ dependencies = [
 
 [[package]]
 name = "xrmc-media"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "xrmc-render"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytemuck",
  "eframe",
@@ -4659,7 +4669,7 @@ dependencies = [
 
 [[package]]
 name = "xrmc-scrcpy"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytes",
  "thiserror 2.0.21",

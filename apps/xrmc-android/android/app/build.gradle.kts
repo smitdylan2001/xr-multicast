@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
 }
 
+// The version comes from the Rust workspace (Cargo.toml): versionCode = major*10000 + minor*100 + patch.
+val appVersion: String = rootProject.file("../../../Cargo.toml").readLines()
+    .first { it.startsWith("version = ") }
+    .substringAfter('"').substringBefore('"')
+val appVersionCode: Int = appVersion.split(".").map { it.takeWhile(Char::isDigit).toInt() }
+    .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
+
+// Release signing: XRMC_KEYSTORE (path), XRMC_KEYSTORE_PASSWORD, XRMC_KEY_ALIAS, XRMC_KEY_PASSWORD.
+// Without them, release APKs are signed with the local debug key.
+val releaseKeystore: String? = System.getenv("XRMC_KEYSTORE")?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.dunkxr.xrmulticast"
     compileSdk = 36
@@ -13,20 +24,44 @@ android {
         applicationId = "com.dunkxr.xrmulticast"
         minSdk = 33 // Android 13+ (Vulkan 1.1)
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
-        ndk {
-            // XRMC_ABIS=arm64-v8a (or x86_64) builds a single-ABI APK (see build.sh).
-            val abis = (System.getenv("XRMC_ABIS") ?: "arm64-v8a,x86_64").split(",")
-            abiFilters += abis
+        versionCode = appVersionCode
+        versionName = appVersion
+        // XRMC_ABIS=arm64-v8a (or x86_64) builds a single-ABI APK (see build.sh).
+        // ABI splits (below) choose the ABIs themselves; AGP refuses both at once.
+        if (System.getenv("XRMC_SPLITS") != "1") {
+            ndk {
+                abiFilters += (System.getenv("XRMC_ABIS") ?: "arm64-v8a,x86_64").split(",")
+            }
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("XRMC_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("XRMC_KEY_ALIAS")
+                keyPassword = System.getenv("XRMC_KEY_PASSWORD") ?: System.getenv("XRMC_KEYSTORE_PASSWORD")
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Local builds: signed with the debug key. Use your own keystore for distribution.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
+        }
+    }
+
+    // XRMC_SPLITS=1 (build.sh with several ABIs): one APK per ABI plus a universal APK.
+    if (System.getenv("XRMC_SPLITS") == "1") {
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include(*(System.getenv("XRMC_ABIS") ?: "arm64-v8a,x86_64").split(",").toTypedArray())
+                isUniversalApk = true
+            }
         }
     }
 

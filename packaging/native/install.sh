@@ -37,7 +37,7 @@ done
 
 echo "Installing native XR MultiCast to $DEST"
 mkdir -p "$DEST" "$BIN" "$APPS" "$ICONS/512x512/apps" "$ICONS/scalable/apps"
-for f in xr-multicast xrmc scrcpy-server icon.png icon.svg 70-xr-multicast-adb.rules LICENSE; do
+for f in xr-multicast xrmc scrcpy-server icon.png icon.svg 70-xr-multicast-adb.rules LICENSE THIRD_PARTY_NOTICES.md; do
   [[ -e "$SRC/$f" ]] && install -m "$([[ -x "$SRC/$f" ]] && echo 0755 || echo 0644)" "$SRC/$f" "$DEST/$f"
 done
 ln -sf "$DEST/xr-multicast" "$BIN/xr-multicast-native"
