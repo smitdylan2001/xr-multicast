@@ -128,6 +128,7 @@ for arch in $ARCHES; do
     *) echo "unknown arch $arch" >&2; exit 1 ;;
   esac
   echo "==> building $arch (glibc $glibc)"
+  command -v rustup >/dev/null && rustup target add "$target" >/dev/null
   (cd "$ROOT" && cargo zigbuild --locked --release -p xrmc-desktop -p xrmc-cli --target "$target.$glibc")
   bin="$CARGO_TARGET_DIR/$target/release"
   stage="$OUT/xr-multicast-$VERSION-linux-$arch"

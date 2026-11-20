@@ -92,13 +92,25 @@ jobs:
         shell: pwsh
         run: |
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $exe = "dist-native\xr-multicast-$v-windows-x64\xr-multicast.exe"
+          $t = $env:RUNNER_TEMP
           $env:RUST_LOG = 'info'
-          $p = Start-Process -FilePath "dist-native\xr-multicast-$v-windows-x64\xr-multicast.exe" -Wait -PassThru -NoNewWindow `
-            -ArgumentList '--demo', '3', '--offscreen', '800x600', '--screenshot', "$env:RUNNER_TEMP\windows.png", '--exit-after', '5' `
-            -RedirectStandardError "$env:RUNNER_TEMP\windows-stderr.txt"
-          Get-Content "$env:RUNNER_TEMP\windows-stderr.txt"
-          "exit code $($p.ExitCode)"
-          Get-Item "$env:RUNNER_TEMP\windows.png"
+          $runs = @{
+            'windows-demo'   = @('--demo', '3', '--offscreen', '800x600', '--screenshot', "$t\shots\windows-demo.png", '--exit-after', '5')
+            # Hub mode without devices: loads the bundled FFmpeg and probes D3D11VA (Video codecs view).
+            'windows-codecs' = @('--no-adb-server', '--no-usb', '--store', "$t\s.json", '--adb-key', "$t\adbkey", '--offscreen', '1280x800', '--show', 'codecs', '--screenshot', "$t\shots\windows-codecs.png", '--exit-after', '6')
+          }
+          New-Item -ItemType Directory -Force "$t\shots" | Out-Null
+          foreach ($k in $runs.Keys) {
+            $p = Start-Process -FilePath $exe -Wait -PassThru -NoNewWindow -ArgumentList $runs[$k] -RedirectStandardError "$t\shots\$k.log"
+            Get-Content "$t\shots\$k.log"
+            "$k exit code $($p.ExitCode)"
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: screenshots-windows
+          path: ${{ runner.temp }}/shots
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: windows
@@ -130,9 +142,18 @@ jobs:
       - name: Offscreen render (informational)
         continue-on-error: true
         run: |
-          RUST_LOG=info "dist-native/macos/XR MultiCast.app/Contents/MacOS/xr-multicast" --demo 3 \
-            --offscreen 800x600 --screenshot "$RUNNER_TEMP/macos.png" --exit-after 5
-          ls -l "$RUNNER_TEMP/macos.png"
+          exe="dist-native/macos/XR MultiCast.app/Contents/MacOS/xr-multicast"
+          t="$RUNNER_TEMP"
+          mkdir -p "$t/shots"
+          RUST_LOG=info "$exe" --demo 3 --offscreen 800x600 --screenshot "$t/shots/macos-demo.png" --exit-after 5 2>&1 | tee "$t/shots/macos-demo.log" || true
+          # Hub mode without devices: Homebrew FFmpeg (if the runner has it) and the Video codecs view.
+          RUST_LOG=info "$exe" --no-adb-server --no-usb --store "$t/s.json" --adb-key "$t/adbkey" --offscreen 1280x800 \
+            --show codecs --screenshot "$t/shots/macos-codecs.png" --exit-after 6 2>&1 | tee "$t/shots/macos-codecs.log" || true
+      - uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: screenshots-macos
+          path: ${{ runner.temp }}/shots
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: macos
@@ -210,6 +231,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.2
         with:
           path: dist
+          pattern: '{linux,windows,macos,android}'
           merge-multiple: true
       - name: SHA256SUMS.txt
         working-directory: dist
