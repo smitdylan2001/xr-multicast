@@ -703,3 +703,47 @@ async fn generic_trait_usage_and_spawn() {
     });
     assert_eq!(handle.await.unwrap().trim(), "Fake Quest");
 }
+
+#[tokio::test]
+async fn auth_tries_extra_keys_before_prompting() {
+    let key = test_key();
+    let other = std::sync::Arc::new(AdbKey::generate().unwrap());
+    let config = FakeConfig {
+        auth: AuthMode::Keys {
+            authorized: vec![other.private_key().to_public_key()],
+            accept_new_key: false,
+        },
+        ..FakeConfig::default()
+    };
+    let opts = ConnectOptions {
+        extra_keys: vec![other],
+        ..options()
+    };
+    let (conn, fake) = connect_with(config, Some(&key), &opts).await;
+    let conn = conn.expect("the extra key is accepted");
+    assert_eq!(fake.stats.signatures_checked.load(Ordering::SeqCst), 2);
+    assert!(fake.stats.pubkey.lock().unwrap().is_none(), "no prompt");
+    echo_roundtrip(&conn, b"extra key").await;
+}
+
+#[tokio::test]
+async fn auth_offers_main_public_key_when_all_keys_are_rejected() {
+    let key = test_key();
+    let other = std::sync::Arc::new(AdbKey::generate().unwrap());
+    let config = FakeConfig {
+        auth: AuthMode::Keys {
+            authorized: vec![],
+            accept_new_key: true,
+        },
+        ..FakeConfig::default()
+    };
+    let opts = ConnectOptions {
+        extra_keys: vec![other],
+        ..options()
+    };
+    let (conn, fake) = connect_with(config, Some(&key), &opts).await;
+    conn.expect("accepted after the prompt");
+    assert_eq!(fake.stats.signatures_checked.load(Ordering::SeqCst), 2);
+    let pubkey = fake.stats.pubkey.lock().unwrap().clone().expect("prompt");
+    assert_eq!(pubkey, key.auth_public_key_payload("test@host"));
+}

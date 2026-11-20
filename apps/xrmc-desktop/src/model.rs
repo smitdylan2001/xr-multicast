@@ -523,6 +523,10 @@ fn via(st: &StreamState) -> String {
     }
 }
 
+/// Shown while a stream is up but the headset sends no picture.
+pub const NO_VIDEO_HINT: &str = "Put the headset on: it sends no picture while its display is off. \
+     Accept \"Allow USB debugging\" if it asks. The stream picks up by itself.";
+
 /// The tile's status message (`Tile.refresh` in the Electron app).
 pub fn tile_status(st: Option<&StreamState>, tile: &Tile) -> Option<TileStatus> {
     if let Some(f) = &tile.fatal {
@@ -549,6 +553,12 @@ pub fn tile_status(st: Option<&StreamState>, tile: &Tile) -> Option<TileStatus> 
         });
     }
     match st.state {
+        // Restarted by the no-video watchdog: keep telling the user what to do.
+        StreamStatus::Idle | StreamStatus::Starting | StreamStatus::Live
+            if st.reason.as_deref() == Some("no video") && !tile.has_video =>
+        {
+            Some(status("Waiting for video…", NO_VIDEO_HINT, true))
+        }
         StreamStatus::Idle | StreamStatus::Starting => {
             Some(status("Starting stream…", via(st), true))
         }
@@ -557,11 +567,9 @@ pub fn tile_status(st: Option<&StreamState>, tile: &Tile) -> Option<TileStatus> 
             st.error.clone().unwrap_or_default(),
             true,
         )),
-        StreamStatus::Live | StreamStatus::Resizing if !tile.has_video => Some(status(
-            "Waiting for video…",
-            "Wake the headset if its display is off.",
-            true,
-        )),
+        StreamStatus::Live | StreamStatus::Resizing if !tile.has_video => {
+            Some(status("Waiting for video…", NO_VIDEO_HINT, true))
+        }
         StreamStatus::Error => Some(TileStatus {
             actions: true,
             ..status(
@@ -1454,6 +1462,14 @@ mod tests {
         let live = state("A", StreamStatus::Live);
         assert_eq!(
             tile_status(Some(&live), &t).unwrap().title,
+            "Waiting for video…"
+        );
+        assert_eq!(tile_status(Some(&live), &t).unwrap().detail, NO_VIDEO_HINT);
+        // Restarted by the no-video watchdog: still "waiting", not "starting".
+        let mut again = state("A", StreamStatus::Starting);
+        again.reason = Some("no video".into());
+        assert_eq!(
+            tile_status(Some(&again), &t).unwrap().title,
             "Waiting for video…"
         );
         t.on_frame(0, 1920, 1024, 8);

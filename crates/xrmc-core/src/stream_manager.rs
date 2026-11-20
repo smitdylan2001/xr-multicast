@@ -220,6 +220,13 @@ pub struct StreamManagerConfig {
     pub hidden_delay: Duration,
     /// How long to wait for a session to end after asking it to stop.
     pub stop_timeout: Duration,
+    /// A session that is up but sends no video for this long (the headset's
+    /// display is off, or it was busy with the "Allow USB debugging" prompt) is
+    /// restarted. Doubles on every restart without video, up to `no_video_max`.
+    pub no_video_timeout: Duration,
+    pub no_video_max: Duration,
+    /// Video that stops for this long mid-stream also restarts the session.
+    pub video_gap_timeout: Duration,
 }
 
 impl Default for StreamManagerConfig {
@@ -233,6 +240,9 @@ impl Default for StreamManagerConfig {
             down_delay: Duration::from_millis(5000),
             hidden_delay: Duration::from_millis(15000),
             stop_timeout: Duration::from_secs(5),
+            no_video_timeout: Duration::from_secs(6),
+            no_video_max: Duration::from_secs(30),
+            video_gap_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -504,6 +514,8 @@ pub mod policy {
         pub user_stopped: bool,
         pub replaced: bool,
         pub resizing: bool,
+        /// Restarted by the no-video watchdog (not a failure).
+        pub stalled: bool,
         /// The entry is still the stream's current one.
         pub is_current: bool,
         /// The headset is still connected.
@@ -523,6 +535,9 @@ pub mod policy {
         Stopped { emit: bool },
         /// Planned restart at a new resolution: relaunch right away.
         Relaunch,
+        /// Restart after the no-video watchdog fired: relaunch shortly, keeping
+        /// the codec (no video is not the codec's fault) and the retry budget.
+        StallRestart,
         /// 10-bit refused by the encoder: retry the same codec in 8-bit.
         TenBitFallback,
         /// A non-H.264 stream died before producing video: fall back to H.264.
@@ -540,6 +555,9 @@ pub mod policy {
         }
         if c.resizing && c.is_current {
             return EndAction::Relaunch;
+        }
+        if c.stalled && c.is_current && c.online {
+            return EndAction::StallRestart;
         }
         if c.online && c.ten_bit && !c.got_media {
             return EndAction::TenBitFallback;
@@ -588,6 +606,10 @@ struct EntryData {
     live_since: Option<u64>,
     down_since: Option<u64>,
     resizing: bool,
+    /// Stopped by the no-video watchdog.
+    stalled: bool,
+    /// Watchdog restarts in a row without video.
+    stall_count: u32,
 }
 
 impl EntryData {
@@ -621,6 +643,8 @@ impl EntryData {
             live_since: None,
             down_since: None,
             resizing: false,
+            stalled: false,
+            stall_count: 0,
         }
     }
 
@@ -753,6 +777,7 @@ enum DriverEvent<S> {
     Command(Option<Command>),
     StopTimeout,
     ResizeDue,
+    StallDue,
     Phase(PhaseEvent<S>),
 }
 
@@ -1298,6 +1323,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
             ));
             d.bit_rate = Some(p.size.bit_rate);
             d.resizing = false;
+            d.stalled = false;
             d.codec = Some(p.choice.codec);
             d.encoder = p.choice.encoder.clone();
             d.crop = p.crop.clone();
@@ -1330,6 +1356,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                 user_stopped: d.user_stopped,
                 replaced: d.replaced,
                 resizing: d.resizing,
+                stalled: d.stalled,
                 is_current,
                 online,
                 ten_bit: d.ten_bit,
@@ -1362,6 +1389,12 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                 None
             }
             EndAction::Relaunch => Some(Phase::Preparing(self.prepare(h))),
+            EndAction::StallRestart => {
+                self.set_state(h, StreamStatus::Starting);
+                Some(Phase::Idle {
+                    relaunch_at: Instant::now() + cfg.fallback_delay,
+                })
+            }
             EndAction::TenBitFallback => {
                 let codec = ctx.codec.unwrap_or(Codec::H264);
                 lock(&self.inner.failures).mark_ten_bit_failed(&h.serial, codec);
@@ -1479,6 +1512,38 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
         }
     }
 
+    /// How long a fresh session may stay without video before it is restarted.
+    fn no_video_timeout(&self, h: &EntryHandle) -> Duration {
+        let cfg = &self.inner.config;
+        let n = h.data().stall_count.min(8);
+        (cfg.no_video_timeout * 2u32.pow(n)).min(cfg.no_video_max.max(cfg.no_video_timeout))
+    }
+
+    /// The no-video watchdog fired: restart the session (the headset's display
+    /// was off, or adbd was busy with the authorisation prompt) without counting
+    /// it as a failure or falling back to another codec.
+    fn on_stall(&self, h: &EntryHandle, phase: &Phase<B::Session>) {
+        let Phase::Running { session, .. } = phase else {
+            return;
+        };
+        {
+            let mut d = h.data();
+            if d.user_stopped || d.resizing {
+                return;
+            }
+            tracing::info!(
+                "{}: no video for a while ({}), restarting the stream",
+                h.serial,
+                if d.got_media { "stopped" } else { "none yet" }
+            );
+            d.stalled = true;
+            d.stall_count = d.stall_count.saturating_add(1);
+            d.got_media = false;
+            d.reason = Some("no video".into());
+        }
+        session.stop();
+    }
+
     fn on_session_event(
         &self,
         h: &EntryHandle,
@@ -1506,6 +1571,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                     if !d.got_media && !packet.config {
                         d.got_media = true;
                         d.retries = 0;
+                        d.stall_count = 0;
                         d.reason = None;
                     }
                 }
@@ -1528,6 +1594,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
     async fn drive(self, h: Arc<EntryHandle>, mut cmd_rx: mpsc::UnboundedReceiver<Command>) {
         let mut phase: Phase<B::Session> = Phase::Preparing(self.prepare(&h));
         let mut resize_at: Option<Instant> = None;
+        let mut stall_at: Option<Instant> = None;
         let mut stop_deadline: Option<Instant> = None;
         let mut stop_waiters: Vec<oneshot::Sender<()>> = Vec::new();
         loop {
@@ -1536,6 +1603,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                 cmd = cmd_rx.recv() => DriverEvent::Command(cmd),
                 _ = sleep_until_opt(stop_deadline) => DriverEvent::StopTimeout,
                 _ = sleep_until_opt(resize_at) => DriverEvent::ResizeDue,
+                _ = sleep_until_opt(stall_at) => DriverEvent::StallDue,
                 e = phase_event(&mut phase) => DriverEvent::Phase(e),
             };
             let next = match event {
@@ -1552,6 +1620,7 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                 }
                 DriverEvent::Command(Some(Command::Stop { replaced, done })) => {
                     resize_at = None;
+                    stall_at = None;
                     stop_waiters.push(done);
                     {
                         let mut d = h.data();
@@ -1576,6 +1645,11 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                 DriverEvent::ResizeDue => {
                     resize_at = None;
                     self.evaluate_resize(&h, &phase, &mut resize_at);
+                    continue;
+                }
+                DriverEvent::StallDue => {
+                    stall_at = None;
+                    self.on_stall(&h, &phase);
                     continue;
                 }
                 DriverEvent::Phase(PhaseEvent::RelaunchDue) => {
@@ -1615,12 +1689,22 @@ impl<B: StreamBackend, D: DeviceDirectory> StreamManager<B, D> {
                     self.on_end(&h)
                 }
                 DriverEvent::Phase(PhaseEvent::Session(e)) => {
+                    match &e {
+                        SessionEvent::Session { .. } => {
+                            stall_at = Some(Instant::now() + self.no_video_timeout(&h));
+                        }
+                        SessionEvent::Packet(p) if !p.config => {
+                            stall_at = Some(Instant::now() + self.inner.config.video_gap_timeout);
+                        }
+                        _ => {}
+                    }
                     self.on_session_event(&h, e, &mut resize_at);
                     continue;
                 }
                 DriverEvent::Phase(PhaseEvent::SessionEnded) => {
                     drop(std::mem::replace(&mut phase, Phase::Done));
                     stop_deadline = None;
+                    stall_at = None;
                     self.on_end(&h)
                 }
             };

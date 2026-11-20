@@ -79,6 +79,11 @@ pub struct ConnectOptions {
     /// Optional handshake progress callback (e.g. to show "unauthorized"
     /// while the user has not accepted the prompt yet).
     pub on_stage: Option<StageCallback>,
+    /// More keys to try (signature only) after the main key, like adb does with
+    /// `~/.android/adbkey` and `ADB_VENDOR_KEYS`: a headset that already allowed
+    /// one of them (e.g. Google's adb on this computer) connects without a new
+    /// prompt. Only the main key's public key is ever offered.
+    pub extra_keys: Vec<Arc<AdbKey>>,
 }
 
 impl std::fmt::Debug for ConnectOptions {
@@ -91,6 +96,7 @@ impl std::fmt::Debug for ConnectOptions {
             .field("key_name", &self.key_name)
             .field("open_timeout", &self.open_timeout)
             .field("on_stage", &self.on_stage.is_some())
+            .field("extra_keys", &self.extra_keys.len())
             .finish()
     }
 }
@@ -113,6 +119,7 @@ impl Default for ConnectOptions {
             key_name: default_key_name(),
             open_timeout: Duration::from_secs(30),
             on_stage: None,
+            extra_keys: Vec::new(),
         }
     }
 }
@@ -566,7 +573,12 @@ async fn handshake<R: MessageReader, W: MessageWriter>(
     writer.flush().await?;
     options.stage(HandshakeStage::Connecting);
 
-    let mut signed = false;
+    // Keys to sign tokens with, in order; then the main key's public key is offered.
+    let signers: Vec<&AdbKey> = key
+        .into_iter()
+        .chain(options.extra_keys.iter().map(|k| k.as_ref()))
+        .collect();
+    let mut signed = 0usize;
     let mut auth_deadline: Option<tokio::time::Instant> = None;
     loop {
         let wait = match auth_deadline {
@@ -598,19 +610,22 @@ async fn handshake<R: MessageReader, W: MessageWriter>(
                 ));
             }
             A_AUTH if msg.arg0 == AUTH_TOKEN => {
-                let Some(key) = key else {
+                if signers.is_empty() {
                     return Err(AdbError::Unauthorized);
-                };
-                if !signed {
-                    let signature = key.sign_token(&msg.payload)?;
+                }
+                if let Some(signer) = signers.get(signed) {
+                    let signature = signer.sign_token(&msg.payload)?;
                     writer
                         .write_message(&Message::new(A_AUTH, AUTH_SIGNATURE, 0, signature), true)
                         .await?;
                     writer.flush().await?;
-                    signed = true;
+                    signed += 1;
                     options.stage(HandshakeStage::Authenticating);
                 } else if auth_deadline.is_none() {
-                    // The signature was rejected: offer our public key so the user can allow it.
+                    // Every signature was rejected: offer our public key so the user can allow it.
+                    let Some(key) = key else {
+                        return Err(AdbError::Unauthorized);
+                    };
                     if !options.send_public_key {
                         return Err(AdbError::Unauthorized);
                     }

@@ -274,6 +274,62 @@ fn config_dir() -> Option<PathBuf> {
     }
 }
 
+/// Keys Google's adb uses on this computer: `~/.android/adbkey` (or
+/// `$ANDROID_USER_HOME/adbkey`) and the files in `ADB_VENDOR_KEYS`. Headsets that
+/// already allowed adb (or the Electron app, which uses adb) then connect
+/// without a second "Allow USB debugging" prompt.
+pub fn default_extra_adb_keys() -> Vec<PathBuf> {
+    let mut keys = Vec::new();
+    #[cfg(not(target_os = "android"))]
+    {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let android_home = std::env::var_os("ANDROID_USER_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home.map(|h| PathBuf::from(h).join(".android")));
+        if let Some(dir) = android_home {
+            keys.push(dir.join("adbkey"));
+        }
+        if let Some(vendor) = std::env::var_os("ADB_VENDOR_KEYS") {
+            for p in std::env::split_paths(&vendor) {
+                if p.is_dir() {
+                    let mut found: Vec<PathBuf> = std::fs::read_dir(&p)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|f| f.extension().is_none_or(|e| e != "pub"))
+                        .collect();
+                    found.sort();
+                    keys.extend(found);
+                } else {
+                    keys.push(p);
+                }
+            }
+        }
+    }
+    keys
+}
+
+fn load_extra_keys(paths: &[PathBuf], main: &AdbKey) -> Vec<Arc<AdbKey>> {
+    let main_pub = main.auth_public_key_payload("");
+    paths
+        .iter()
+        .filter(|p| p.is_file())
+        .filter_map(|p| {
+            let pem = std::fs::read_to_string(p).ok()?;
+            match AdbKey::from_pem(&pem) {
+                Ok(k) => Some(k),
+                Err(e) => {
+                    tracing::debug!("skipping ADB key {}: {e}", p.display());
+                    None
+                }
+            }
+        })
+        .filter(|k| k.auth_public_key_payload("") != main_pub)
+        .map(Arc::new)
+        .collect()
+}
+
 /// Options for [`Hub::open`].
 #[derive(Debug, Clone)]
 pub struct HubOptions {
@@ -281,12 +337,16 @@ pub struct HubOptions {
     pub registry: RegistryOptions,
     pub devices: DeviceManagerConfig,
     pub streams: StreamManagerConfig,
+    /// More ADB keys to try before prompting (see [`default_extra_adb_keys`]).
+    /// Missing or unreadable files are skipped.
+    pub extra_adb_keys: Vec<PathBuf>,
 }
 
 impl HubOptions {
     pub fn new(paths: HubPaths) -> Self {
         HubOptions {
             paths,
+            extra_adb_keys: default_extra_adb_keys(),
             registry: RegistryOptions::default(),
             devices: DeviceManagerConfig::default(),
             streams: StreamManagerConfig::default(),
@@ -312,7 +372,13 @@ impl Hub {
     pub fn open(options: HubOptions) -> std::io::Result<Hub> {
         let key = AdbKey::load_or_generate(&options.paths.adb_key)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let registry = AdbRegistry::new(AdbHost::new(key), options.registry);
+        let extra = load_extra_keys(&options.extra_adb_keys, &key);
+        if !extra.is_empty() {
+            tracing::info!("also trying {} existing adb key(s) before prompting", extra.len());
+        }
+        let mut host = AdbHost::new(key);
+        host.options_mut().extra_keys = extra;
+        let registry = AdbRegistry::new(host, options.registry);
         let jar = match &options.paths.scrcpy_server {
             Some(p) => Some(Arc::new(read_file(p)?)),
             None => None,

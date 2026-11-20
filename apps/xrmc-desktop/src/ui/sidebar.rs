@@ -131,7 +131,15 @@ impl App {
                 (
                     title,
                     list.into_iter()
-                        .map(|h| model::card_for(h, self.model.streams.get(&h.id), now))
+                        .map(|h| {
+                            let mut card =
+                                model::card_for(h, self.model.streams.get(&h.id), now);
+                            // LIVE only once the picture is actually there.
+                            if let Card::Headset(c) = &mut card {
+                                c.live &= self.model.tile(&h.id).is_some_and(|t| t.has_video);
+                            }
+                            card
+                        })
                         .collect(),
                 )
             })

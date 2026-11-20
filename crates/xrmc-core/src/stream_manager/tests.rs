@@ -300,6 +300,7 @@ fn end_decisions() {
         user_stopped: false,
         replaced: false,
         resizing: false,
+        stalled: false,
         is_current: true,
         online: true,
         ten_bit: false,
@@ -335,6 +336,26 @@ fn end_decisions() {
         got_media: false,
         ..base
     };
+    assert_eq!(
+        decide_on_end(&EndContext {
+            stalled: true,
+            ten_bit: true,
+            codec: Some(Codec::H265),
+            retries: 5,
+            ..no_media
+        }),
+        EndAction::StallRestart,
+        "no video is not the codec's fault and doesn't use up retries"
+    );
+    assert_eq!(
+        decide_on_end(&EndContext {
+            stalled: true,
+            online: false,
+            auto_retry: false,
+            ..no_media
+        }),
+        EndAction::Fail
+    );
     assert_eq!(
         decide_on_end(&EndContext {
             ten_bit: true,
@@ -597,7 +618,17 @@ struct Harness {
 
 const ID: &str = "2G0YC5ZG8L0123";
 
+/// Most tests send video only once: keep the no-video watchdog out of their way.
 fn harness() -> Harness {
+    harness_with(StreamManagerConfig {
+        no_video_timeout: Duration::from_secs(3600),
+        no_video_max: Duration::from_secs(3600),
+        video_gap_timeout: Duration::from_secs(3600),
+        ..StreamManagerConfig::default()
+    })
+}
+
+fn harness_with(config: StreamManagerConfig) -> Harness {
     let backend = FakeBackend::default();
     backend.lock().encoders = Some(quest_encoders());
     backend.lock().panel = Some(QUEST3);
@@ -611,7 +642,7 @@ fn harness() -> Harness {
         devices.clone(),
         store.clone(),
         tx,
-        StreamManagerConfig::default(),
+        config,
     );
     Harness {
         sm,
@@ -1404,4 +1435,51 @@ async fn a_session_that_never_stops_is_abandoned_after_the_timeout() {
         }
     }
     assert_eq!(last, Some(StreamStatus::Stopped));
+}
+
+/// The headset's display is off (or it shows "Allow USB debugging"): the
+/// session comes up but sends no video. It is restarted with the same codec,
+/// with growing intervals, and recovers once video flows.
+#[tokio::test(start_paused = true)]
+async fn a_session_without_video_is_restarted_with_the_same_codec() {
+    let mut h = harness_with(StreamManagerConfig::default());
+    h.sm.set_decoder_support(Some(all_hw(false)));
+    h.sm.start(ID, StartOptions::default()).await.unwrap();
+    h.wait_starts(1).await;
+    assert_eq!(h.config(0).codec, Codec::H265);
+    h.send(0, SessionEvent::Session { width: 1832, height: 960 }).await;
+    h.send(0, packet(true)).await;
+    let t0 = tokio::time::Instant::now();
+    h.wait_starts(2).await;
+    let first = t0.elapsed();
+    assert!(first >= Duration::from_secs(6) && first < Duration::from_secs(8), "{first:?}");
+    assert_eq!(h.config(1).codec, Codec::H265, "no codec fallback");
+    let (states, notices, _) = h.drain();
+    assert!(notices.is_empty(), "{notices:?}");
+    assert!(!states.iter().any(|s| s.state == StreamStatus::Error));
+    assert_eq!(states.last().unwrap().reason.as_deref(), Some("no video"));
+
+    // Again without video: the next restart waits twice as long.
+    h.send(1, SessionEvent::Session { width: 1832, height: 960 }).await;
+    let t1 = tokio::time::Instant::now();
+    h.wait_starts(3).await;
+    let second = t1.elapsed();
+    assert!(second >= Duration::from_secs(12) && second < Duration::from_secs(14), "{second:?}");
+
+    // Video arrives: live, and it stays up while packets keep coming.
+    h.go_live(2).await;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        h.send(2, packet(false)).await;
+    }
+    assert_eq!(h.backend.lock().starts.len(), 3);
+    assert_eq!(h.sm.state_of(ID).unwrap().state, StreamStatus::Live);
+    assert_eq!(h.sm.state_of(ID).unwrap().reason, None);
+
+    // Video stops mid-stream (headset taken off): restarted after the gap timeout.
+    let t2 = tokio::time::Instant::now();
+    h.wait_starts(4).await;
+    let gap = t2.elapsed();
+    assert!(gap >= Duration::from_secs(10) && gap < Duration::from_secs(12), "{gap:?}");
+    assert_eq!(h.config(3).codec, Codec::H265);
 }
