@@ -80,6 +80,10 @@ pub struct LensParams {
     pub chroma_b: f32,
     /// Output aspect (width / height); `None` = the eye's own aspect.
     pub output_aspect: Option<f32>,
+    /// Roll of the LEFT eye's picture in degrees, turned clockwise to level it
+    /// (canted panels such as Quest 3's); mirrored for the right eye in
+    /// side-by-side layouts, like the centre offset.
+    pub tilt: f32,
 }
 
 impl Default for LensParams {
@@ -93,6 +97,7 @@ impl Default for LensParams {
             chroma_r: 1.0,
             chroma_b: 1.0,
             output_aspect: Some(16.0 / 9.0),
+            tilt: 0.0,
         }
     }
 }

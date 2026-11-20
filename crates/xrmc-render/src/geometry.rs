@@ -131,6 +131,7 @@ pub(crate) struct TileUniform {
     pub yuv_g: [f32; 4],
     pub yuv_b: [f32; 4],
     pub tex: [f32; 4],
+    pub tilt: [f32; 4],
 }
 
 /// YUV → RGB matrix rows applied to `(y, u, v, 1)` where each sample is `code / (2^bits - 1)`.
@@ -240,6 +241,7 @@ pub(crate) fn tile_uniform(
             frame.height as f32 / (2.0 * ch),
             f32::from(u8::from(linearise)),
         ],
+        tilt: [1.0, 0.0, 1.0, 0.0],
     };
 
     let vp_of = |r: PxRect| [r.x as f32, r.y as f32, r.w as f32, r.h as f32];
@@ -276,6 +278,16 @@ pub(crate) fn tile_uniform(
                     cy,
                 ]
             };
+            // Canted eyes roll in opposite directions: mirror the angle like the centre.
+            let tilt = finite_or(p.lens.tilt, 0.0).to_radians();
+            let tilt_of = |eye: Eye| {
+                let a = if side_by_side && eye == Eye::Right {
+                    -tilt
+                } else {
+                    tilt
+                };
+                [a.cos(), a.sin()]
+            };
             u.mode[0] = 1;
             u.lens = [
                 finite_or(p.lens.k1, 0.0),
@@ -306,6 +318,8 @@ pub(crate) fn tile_uniform(
                 u.eye1 = eye_rect(p.layout, Eye::Right);
                 let (c0, c1) = (center_of(Eye::Left), center_of(Eye::Right));
                 u.center = [c0[0], c0[1], c1[0], c1[1]];
+                let (t0, t1) = (tilt_of(Eye::Left), tilt_of(Eye::Right));
+                u.tilt = [t0[0], t0[1], t1[0], t1[1]];
                 u.mode[2] = 1;
                 vp
             } else {
@@ -314,6 +328,8 @@ pub(crate) fn tile_uniform(
                 u.eye0 = eye_rect(p.layout, p.eye);
                 let c = center_of(p.eye);
                 u.center = [c[0], c[1], c[0], c[1]];
+                let t = tilt_of(p.eye);
+                u.tilt = [t[0], t[1], t[0], t[1]];
                 vp
             }
         }
@@ -376,7 +392,7 @@ mod tests {
 
     #[test]
     fn uniform_layout_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<TileUniform>(), 14 * 16);
+        assert_eq!(std::mem::size_of::<TileUniform>(), 15 * 16);
     }
 
     #[test]

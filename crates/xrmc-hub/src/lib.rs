@@ -374,7 +374,10 @@ impl Hub {
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let extra = load_extra_keys(&options.extra_adb_keys, &key);
         if !extra.is_empty() {
-            tracing::info!("also trying {} existing adb key(s) before prompting", extra.len());
+            tracing::info!(
+                "also trying {} existing adb key(s) before prompting",
+                extra.len()
+            );
         }
         let mut host = AdbHost::new(key);
         host.options_mut().extra_keys = extra;

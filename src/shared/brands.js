@@ -20,6 +20,7 @@ const BASE_CORRECTION = {
   zoom: 1.4,
   centerX: 0.0, // lens centre offset for the LEFT eye (right eye is mirrored)
   centerY: 0.0,
+  tilt: 0, // degrees the LEFT eye's picture is turned clockwise to level it (canted panels); right eye is mirrored
   chromaR: 1.0, // per-channel radial scale, for lateral chromatic aberration
   chromaB: 1.0,
   rotation: 'auto', // 'auto' | 0 | 90 | 180 | 270 (clockwise)
@@ -43,6 +44,11 @@ const BRANDS = {
       eureka: 'Quest 3',
       panther: 'Quest 3S',
     },
+    variants: [
+      // Quest 3's panels are canted: each eye picture is rolled ~25° (opposite ways),
+      // measured from the mirrored panel image (eye mask symmetry and scene lines).
+      { id: 'quest3', match: /eureka/i, model: 'Quest 3', correction: { tilt: 25 } },
+    ],
     correction: { ...BASE_CORRECTION, k1: -0.22, k2: 0.04, zoom: 1.45, centerX: 0.04 },
     setup: [
       'Create/sign in to a Meta developer account (developers.meta.com) and join or create an organization.',

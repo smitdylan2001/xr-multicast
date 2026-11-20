@@ -9,6 +9,7 @@
     "zoom": 1.4,
     "centerX": 0,
     "centerY": 0,
+    "tilt": 0,
     "chromaR": 1,
     "chromaB": 1,
     "rotation": "auto",
@@ -39,6 +40,7 @@
         "zoom": 1.45,
         "centerX": 0.04,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",
@@ -56,7 +58,17 @@
       ],
       "match": "\\b(oculus|meta)\\b|quest|hollywood|eureka|panther|seacliff|monterey",
       "matchFlags": "i",
-      "variants": []
+      "variants": [
+        {
+          "id": "quest3",
+          "model": "Quest 3",
+          "correction": {
+            "tilt": 25
+          },
+          "match": "eureka",
+          "matchFlags": "i"
+        }
+      ]
     },
     {
       "id": "pico",
@@ -76,6 +88,7 @@
         "zoom": 1.4,
         "centerX": 0,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",
@@ -108,6 +121,7 @@
         "zoom": 1.4,
         "centerX": 0,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",
@@ -150,6 +164,7 @@
         "zoom": 1.4,
         "centerX": 0,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",
@@ -184,6 +199,7 @@
         "zoom": 1.35,
         "centerX": 0,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",
@@ -216,6 +232,7 @@
         "zoom": 1,
         "centerX": 0,
         "centerY": 0,
+        "tilt": 0,
         "chromaR": 1,
         "chromaB": 1,
         "rotation": "auto",

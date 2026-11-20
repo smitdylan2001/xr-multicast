@@ -637,13 +637,7 @@ fn harness_with(config: StreamManagerConfig) -> Harness {
     let store = SharedStore::in_memory();
     store.write(|s| s.modify_headset(ID, |r| r.name = Some("Meta Quest 3 #1".into())));
     let (tx, rx) = crate::events::channel(1024);
-    let sm = StreamManager::new(
-        backend.clone(),
-        devices.clone(),
-        store.clone(),
-        tx,
-        config,
-    );
+    let sm = StreamManager::new(backend.clone(), devices.clone(), store.clone(), tx, config);
     Harness {
         sm,
         backend,
@@ -1447,12 +1441,22 @@ async fn a_session_without_video_is_restarted_with_the_same_codec() {
     h.sm.start(ID, StartOptions::default()).await.unwrap();
     h.wait_starts(1).await;
     assert_eq!(h.config(0).codec, Codec::H265);
-    h.send(0, SessionEvent::Session { width: 1832, height: 960 }).await;
+    h.send(
+        0,
+        SessionEvent::Session {
+            width: 1832,
+            height: 960,
+        },
+    )
+    .await;
     h.send(0, packet(true)).await;
     let t0 = tokio::time::Instant::now();
     h.wait_starts(2).await;
     let first = t0.elapsed();
-    assert!(first >= Duration::from_secs(6) && first < Duration::from_secs(8), "{first:?}");
+    assert!(
+        first >= Duration::from_secs(6) && first < Duration::from_secs(8),
+        "{first:?}"
+    );
     assert_eq!(h.config(1).codec, Codec::H265, "no codec fallback");
     let (states, notices, _) = h.drain();
     assert!(notices.is_empty(), "{notices:?}");
@@ -1460,11 +1464,21 @@ async fn a_session_without_video_is_restarted_with_the_same_codec() {
     assert_eq!(states.last().unwrap().reason.as_deref(), Some("no video"));
 
     // Again without video: the next restart waits twice as long.
-    h.send(1, SessionEvent::Session { width: 1832, height: 960 }).await;
+    h.send(
+        1,
+        SessionEvent::Session {
+            width: 1832,
+            height: 960,
+        },
+    )
+    .await;
     let t1 = tokio::time::Instant::now();
     h.wait_starts(3).await;
     let second = t1.elapsed();
-    assert!(second >= Duration::from_secs(12) && second < Duration::from_secs(14), "{second:?}");
+    assert!(
+        second >= Duration::from_secs(12) && second < Duration::from_secs(14),
+        "{second:?}"
+    );
 
     // Video arrives: live, and it stays up while packets keep coming.
     h.go_live(2).await;
@@ -1480,6 +1494,9 @@ async fn a_session_without_video_is_restarted_with_the_same_codec() {
     let t2 = tokio::time::Instant::now();
     h.wait_starts(4).await;
     let gap = t2.elapsed();
-    assert!(gap >= Duration::from_secs(10) && gap < Duration::from_secs(12), "{gap:?}");
+    assert!(
+        gap >= Duration::from_secs(10) && gap < Duration::from_secs(12),
+        "{gap:?}"
+    );
     assert_eq!(h.config(3).codec, Codec::H265);
 }

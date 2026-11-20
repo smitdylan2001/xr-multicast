@@ -25,6 +25,7 @@ struct Tile {
     yuv_g: vec4<f32>,
     yuv_b: vec4<f32>,
     tex: vec4<f32>,     // sample scale (10-bit in R16 / RG16), chroma uv scale x, y, 1 = linearise output (sRGB target)
+    tilt: vec4<f32>,    // eye roll: cos, sin of eye0 (xy) and eye1 (zw); picture turned clockwise by the angle
 };
 
 @group(0) @binding(0) var tex_y: texture_2d<f32>;
@@ -82,7 +83,9 @@ fn inside(e: vec2<f32>) -> f32 {
     return s.x * s.y;
 }
 
-fn distort_to_eye(q: vec2<f32>, cs: f32, center: vec2<f32>) -> vec2<f32> {
+fn distort_to_eye(q0: vec2<f32>, cs: f32, center: vec2<f32>, rot: vec2<f32>) -> vec2<f32> {
+    // Canted panels (e.g. Quest 3): the eye picture is rolled around the lens axis.
+    let q = vec2<f32>(rot.x * q0.x - rot.y * q0.y, rot.y * q0.x + rot.x * q0.y);
     let r2 = dot(q, q);
     let f = 1.0 + t.lens.x * r2 + t.lens.y * r2 * r2;
     let d = q * f * cs;
@@ -96,19 +99,19 @@ fn sample_eye(e: vec2<f32>, rect: vec4<f32>) -> vec3<f32> {
     return rgb_at(to_tex(l)) * inside(e);
 }
 
-fn shade(p: vec2<f32>, rect: vec4<f32>, center: vec2<f32>) -> vec3<f32> {
+fn shade(p: vec2<f32>, rect: vec4<f32>, center: vec2<f32>, rot: vec2<f32>) -> vec3<f32> {
     if t.mode.x == 0u {
         let uv = clamp(p * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
         return rgb_at(to_tex(vec2<f32>(uv.x, 1.0 - uv.y)));
     }
     let q = p * vec2<f32>(t.chroma.w, 1.0) / t.lens.z;
     if t.chroma.x == t.chroma.y && t.chroma.z == t.chroma.y {
-        return sample_eye(distort_to_eye(q, t.chroma.y, center), rect);
+        return sample_eye(distort_to_eye(q, t.chroma.y, center, rot), rect);
     }
     return vec3<f32>(
-        sample_eye(distort_to_eye(q, t.chroma.x, center), rect).r,
-        sample_eye(distort_to_eye(q, t.chroma.y, center), rect).g,
-        sample_eye(distort_to_eye(q, t.chroma.z, center), rect).b,
+        sample_eye(distort_to_eye(q, t.chroma.x, center, rot), rect).r,
+        sample_eye(distort_to_eye(q, t.chroma.y, center, rot), rect).g,
+        sample_eye(distort_to_eye(q, t.chroma.z, center, rot), rect).b,
     );
 }
 
@@ -132,20 +135,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let vp = select(t.vp0, t.vp1, right);
     let rect = select(t.eye0, t.eye1, right);
     let center = select(t.center.xy, t.center.zw, right);
+    let rot = select(t.tilt.xy, t.tilt.zw, right);
     let rel = (in.pos.xy - vp.xy) / vp.zw;
     let p = vec2<f32>(rel.x * 2.0 - 1.0, 1.0 - rel.y * 2.0); // -1..1 over the eye viewport, y up
     let out_aspect = t.chroma.w;
 
     if t.look.w > 0.0 {
-        var acc = shade(p, rect, center);
+        var acc = shade(p, rect, center, rot);
         let radius = vec2<f32>(0.035 / max(out_aspect, 0.2), 0.035) * t.look.w;
         for (var i = 0; i < 12; i++) {
-            acc += shade(p + TAPS[i] * radius, rect, center);
+            acc += shade(p + TAPS[i] * radius, rect, center, rot);
         }
         return finish(acc / 13.0 * 0.55);
     }
 
-    var col = shade(p, rect, center);
+    var col = shade(p, rect, center, rot);
     if t.look.z > 0.0 && t.mode.x == 1u {
         let q = p * vec2<f32>(out_aspect, 1.0) / t.lens.z;
         // Screen-space derivatives of q are constant per eye viewport; computed analytically

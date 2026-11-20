@@ -675,6 +675,7 @@ pub fn tile_params(i: &TileInputs<'_>) -> Resolved {
             chroma_r: p.chroma_r as f32,
             chroma_b: p.chroma_b as f32,
             output_aspect: parse_output_aspect(&p.output_aspect),
+            tilt: p.tilt as f32,
         },
         blur: i.tile.resizing,
         grid: i.calib.is_some_and(|c| c.grid),
@@ -901,7 +902,7 @@ pub struct SliderSpec {
     pub hint: &'static str,
 }
 
-pub const CALIB_SLIDERS: [SliderSpec; 7] = [
+pub const CALIB_SLIDERS: [SliderSpec; 8] = [
     SliderSpec {
         key: "k1",
         label: "Barrel correction (k1)",
@@ -943,6 +944,14 @@ pub const CALIB_SLIDERS: [SliderSpec; 7] = [
         hint: "",
     },
     SliderSpec {
+        key: "tilt",
+        label: "Tilt (°)",
+        min: -45.0,
+        max: 45.0,
+        step: 0.5,
+        hint: "Levels a slanted picture (canted displays). Mirrored for the right eye.",
+    },
+    SliderSpec {
         key: "chromaR",
         label: "Red fringe",
         min: 0.97,
@@ -967,6 +976,7 @@ pub fn slider_value<'a>(c: &'a mut Correction, key: &str) -> Option<&'a mut f64>
         "zoom" => &mut c.zoom,
         "centerX" => &mut c.center_x,
         "centerY" => &mut c.center_y,
+        "tilt" => &mut c.tilt,
         "chromaR" => &mut c.chroma_r,
         "chromaB" => &mut c.chroma_b,
         _ => return None,

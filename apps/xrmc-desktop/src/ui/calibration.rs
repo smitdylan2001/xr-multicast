@@ -306,7 +306,13 @@ impl App {
             ui.checkbox(&mut p.flip_v, "Flip vertically");
         });
         for s in &CALIB_SLIDERS {
-            let decimals = if s.step < 0.001 { 4 } else { 3 };
+            let decimals = if s.step >= 0.5 {
+                1
+            } else if s.step < 0.001 {
+                4
+            } else {
+                3
+            };
             let Some(v) = model::slider_value(p, s.key) else {
                 continue;
             };

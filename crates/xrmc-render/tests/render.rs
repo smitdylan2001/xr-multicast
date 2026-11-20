@@ -1171,3 +1171,70 @@ fn lens_correction_straightens_grid_lines() {
         "stereo rows not straight"
     );
 }
+
+/// Side-by-side panel whose eyes are rolled by ±`deg` (left anticlockwise, like
+/// Quest 3's canted panels): a horizontal scene line at q.y = 0.3 in each eye.
+fn rolled_sbs(eye_w: u32, eye_h: u32, deg: f64) -> Frame {
+    let w = eye_w * 2;
+    let aspect = eye_w as f64 / eye_h as f64;
+    make_frame(w, eye_h, PixelFormat::I420, LIMITED_709, 0, move |x, y| {
+        let a = if x >= eye_w { deg } else { -deg }.to_radians();
+        let ex = ((x % eye_w) as f64 + 0.5) / eye_w as f64;
+        let ey = 1.0 - (y as f64 + 0.5) / eye_h as f64;
+        let d = [(ex * 2.0 - 1.0) * aspect, ey * 2.0 - 1.0];
+        // The level scene position shown at d.
+        let qy = a.sin() * d[0] + a.cos() * d[1];
+        let v = if (qy - 0.3).abs() < 0.012 { 0.95 } else { 0.1 };
+        [v, v, v]
+    })
+}
+
+#[test]
+fn tilt_levels_rolled_eyes_and_mirrors_for_the_right_eye() {
+    let r = renderer();
+    r.try_upload("roll", &rolled_sbs(400, 400, 20.0)).unwrap();
+    let (ow, oh) = (400u32, 400u32);
+    let expected = ((1.0 - 0.3) / 2.0 * oh as f64) as u32;
+    let lens = |tilt| LensParams {
+        tilt,
+        ..flat_lens()
+    };
+    let spread = |img: &[u8]| {
+        let rows = line_rows(img, ow, expected, 60, (60..ow - 60).step_by(4));
+        assert!(rows.len() > 50, "line found in {} columns", rows.len());
+        let min = rows.iter().map(|r| r.1).fold(f64::MAX, f64::min);
+        let max = rows.iter().map(|r| r.1).fold(f64::MIN, f64::max);
+        (min, max)
+    };
+    for eye in [Eye::Left, Eye::Right] {
+        let p = TileParams {
+            eye,
+            layout: Layout::Sbs,
+            lens: lens(20.0),
+            ..Default::default()
+        };
+        let img = r.snapshot("roll", &p, ow, oh).unwrap();
+        save_png(&format!("tilt-{eye:?}.png").to_lowercase(), ow, oh, &img);
+        let (min, max) = spread(&img);
+        assert!(
+            max - min <= 2.0,
+            "{eye:?}: levelled line spans {min:.1}..{max:.1}"
+        );
+        assert!(
+            (min - expected as f64).abs() <= 3.0,
+            "{eye:?}: row {min:.1}"
+        );
+    }
+    // Without the tilt the line is clearly slanted.
+    let p = TileParams {
+        layout: Layout::Sbs,
+        lens: lens(0.0),
+        ..Default::default()
+    };
+    let img = r.snapshot("roll", &p, ow, oh).unwrap();
+    let rows = line_rows(&img, ow, expected, 90, [80, ow - 80].into_iter());
+    assert!(
+        (rows[0].1 - rows[1].1).abs() > 40.0,
+        "untilted line should slope: {rows:?}"
+    );
+}

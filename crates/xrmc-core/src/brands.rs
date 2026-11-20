@@ -50,6 +50,10 @@ pub struct Correction {
     /// Lens centre offset for the LEFT eye (the right eye is mirrored).
     pub center_x: f64,
     pub center_y: f64,
+    /// Degrees the LEFT eye's picture is turned clockwise to level it (canted
+    /// panels such as Quest 3's); mirrored for the right eye in side-by-side layouts.
+    #[serde(default)]
+    pub tilt: f64,
     /// Per-channel radial scale, for lateral chromatic aberration.
     pub chroma_r: f64,
     pub chroma_b: f64,
@@ -334,6 +338,10 @@ mod tests {
         assert_eq!(preset_correction("meta", None).auto_rotation, 0.0);
         assert_eq!(
             detect_variant("meta", &info("", "", "Quest 3", "eureka", "")),
+            Some("quest3")
+        );
+        assert_eq!(
+            detect_variant("meta", &info("", "", "Quest 2", "hollywood", "")),
             None
         );
     }
@@ -446,5 +454,17 @@ mod tests {
             fresh, embedded,
             "data/brands.json is stale: run `node crates/xrmc-core/scripts/export-brands.js`"
         );
+    }
+}
+
+#[cfg(test)]
+mod tilt_tests {
+    use super::*;
+
+    #[test]
+    fn quest_3_eyes_are_levelled_other_quests_are_not() {
+        assert_eq!(preset_correction("meta", Some("quest3")).tilt, 25.0);
+        assert_eq!(preset_correction("meta", None).tilt, 0.0);
+        assert_eq!(base_correction().tilt, 0.0);
     }
 }
