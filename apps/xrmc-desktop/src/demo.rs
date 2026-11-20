@@ -490,13 +490,11 @@ pub fn demo_base(w: u32, h: u32, style: u32) -> Frame {
         }
     }
     let (du, dv) = TINTS[style as usize % TINTS.len()];
-    for p in 1..3 {
-        let plane = &mut f.planes[p];
+    for (plane, d) in f.planes[1..3].iter_mut().zip([du, dv]) {
         let (pw, ph, stride) = (plane.width as usize, plane.height as usize, plane.stride);
         for row in 0..ph {
             for col in 0..pw {
                 let on = inside(col as f32 * 2.0, row as f32 * 2.0);
-                let d = if p == 1 { du } else { dv };
                 plane.data[row * stride + col] = if on { (128 + d) as u8 } else { 128 };
             }
         }

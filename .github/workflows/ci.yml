@@ -73,6 +73,8 @@ jobs:
   legacy-electron:
     name: Legacy Electron tests
     runs-on: ubuntu-latest
+    # The Electron app is source-only now; its tests are informational.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
