@@ -17,7 +17,7 @@ It is a native app for **Windows, macOS and Linux** (including a **Raspberry Pi 
 
 XR MultiCast is free and open source (MIT), built and maintained by **[Dunk XR](https://dunktechnologies.com)** (Dunk Technologies), which also offers [whitelabel versions and custom hardware](#whitelabel--custom-hardware-by-dunk-xr) built on it.
 
-> **Status: 2.0, the first native release.** Tested on Linux desktop with a real Meta Quest 3 (USB and Wi-Fi, H.265 hardware decoding, lens correction including Quest 3 panel tilt) and on Android emulators end to end. PICO-family, Play For Dream MR and VIVE Focus Vision headsets were tested with the earlier Electron app, which uses the same protocol. **Not yet verified on real hardware:** Raspberry Pi, native Windows and macOS runs, and an Android phone/tablet hosting a real headset over USB. Reports are very welcome; see [Contributing](#contributing).
+> **Status: 2.0, the first native release.** Tested on Linux desktop with a real Meta Quest 3 (USB and Wi-Fi, H.265 hardware decoding, lens correction including Quest 3 panel tilt) and on Android emulators end to end. Play For Dream MR and VIVE Focus Vision headsets were tested with the earlier Electron app, which uses the same protocol; PICO and Android XR follow the same path but are untested. **Not yet verified on real hardware:** Raspberry Pi, native Windows and macOS runs, and an Android phone/tablet hosting a real headset over USB. Reports are very welcome; see [Contributing](#contributing).
 
 ## Contents
 
