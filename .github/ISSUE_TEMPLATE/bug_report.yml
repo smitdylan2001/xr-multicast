@@ -1,0 +1,83 @@
+name: Bug report
+description: Something doesn't work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please check the [troubleshooting table](https://github.com/smitdylan2001/xr-multicast#troubleshooting) first, and tap any amber or red item in the app's status bar: it often explains the fix.
+        Security problems: please report privately instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Plug in a Quest 3 over USB
+        2. Tap Verify, then Cast
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: XR MultiCast version
+      description: Settings → About shows it.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Hub platform
+      options:
+        - Windows
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux x86_64
+        - Linux aarch64 (Raspberry Pi / other SBC)
+        - Android phone or tablet
+        - Legacy Electron app
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS version and GPU
+      placeholder: "Ubuntu 24.04, AMD Radeon 780M"
+  - type: input
+    id: headsets
+    attributes:
+      label: Headset(s)
+      description: Brand, model and software version.
+      placeholder: "Meta Quest 3, Horizon OS v77"
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      multiple: true
+      options:
+        - USB
+        - Wi-Fi
+        - Not connecting at all
+  - type: textarea
+    id: about
+    attributes:
+      label: Settings → About line
+      description: Copy the line under Settings → About (version, connection mode, video decoding, GPU).
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Start `xr-multicast` from a terminal (optionally with `RUST_LOG=debug`) and paste the relevant output. On Android, `adb logcat -s xrmc xrmc-java`.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: A screenshot of the app, or a snapshot from the tile (camera button), helps a lot.

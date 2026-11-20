@@ -1,0 +1,80 @@
+name: Headset report / calibration
+description: Report how a headset model works (or doesn't), or share lens-calibration values.
+labels: ["headset"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from real headsets make the presets better for everyone. Thanks!
+  - type: input
+    id: model
+    attributes:
+      label: Headset brand and model
+      placeholder: "PICO 4 Ultra"
+    validations:
+      required: true
+  - type: input
+    id: software
+    attributes:
+      label: Headset software version
+      placeholder: "PICO OS 5.12"
+  - type: input
+    id: detected
+    attributes:
+      label: How XR MultiCast shows it
+      description: The brand badge and model text on its card or tile.
+      placeholder: "PICO · PICO 4 Ultra"
+  - type: input
+    id: version
+    attributes:
+      label: XR MultiCast version and hub platform
+      placeholder: "2.0.0 on Windows 11"
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works?
+      options:
+        - label: Detected over USB
+        - label: Verify
+        - label: Wi-Fi casting after unplugging
+        - label: Found by Scan network
+        - label: Casting starts and shows a picture
+        - label: Layout (eye views) detected correctly
+        - label: Upright without manual rotation
+        - label: Corrected view looks natural without calibration
+  - type: dropdown
+    id: codecs
+    attributes:
+      label: Codec in use
+      description: Shown in the tile's stats line and in the Video codecs view.
+      options:
+        - H.264
+        - H.265
+        - AV1
+        - Not sure
+  - type: textarea
+    id: calibration
+    attributes:
+      label: Calibration values
+      description: If you calibrated it (tile menu → Calibrate), the values that make straight lines straight.
+      placeholder: |
+        k1: -0.22
+        k2: 0.04
+        zoom: 1.45
+        lens centre X / Y: 0.04 / 0
+        tilt: 0
+        red / blue fringe: 1.0 / 1.0
+        layout / rotation: auto / auto
+      render: text
+  - type: textarea
+    id: snapshots
+    attributes:
+      label: Snapshots
+      description: Please attach a **Raw** and a **Corrected** snapshot (camera button on the tile), ideally of a scene with straight lines.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Setup quirks (developer mode steps that differ, driver needed, prompts), problems, logs.

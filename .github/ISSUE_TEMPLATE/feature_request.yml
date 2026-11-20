@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an idea or improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [roadmap](https://github.com/smitdylan2001/xr-multicast#roadmap) first: the remote dashboard, zero-copy decoding, wireless-debugging pairing and signed builds are already planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation and the problem (e.g. "In a class of 20 Quests I can't tell which student…").
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you imagine it working.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Hub platform(s)
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Raspberry Pi / SBC
+        - Android
+        - Any

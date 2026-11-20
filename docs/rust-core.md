@@ -1,8 +1,8 @@
-# XR MultiCast native core (branch `rust-core`)
+# XR MultiCast native core
 
 A shared Rust core that will power XR MultiCast on **Windows, macOS, Linux and Android** (phones and tablets acting as a hub), and headless Dunk XR hub boxes. iOS is out of scope: it cannot host ADB over USB. Browsers on iPads and other devices remain viewers through the remote web dashboard.
 
-The Electron app on `main` stays the reference implementation until the native apps reach parity. Behaviour is ported with its tests so both stay in sync.
+Since 2.0.0 the native apps are the product and live on `main`. The Electron app in `src/` is kept as legacy source: it is no longer released, but still provides the tablet/browser dashboard and the remote API until those are ported. Behaviour shared with it is ported together with its tests so both stay in sync.
 
 ## Why a shared core
 
@@ -22,13 +22,13 @@ The Electron app on `main` stays the reference implementation until the native a
 | `xrmc-hub` | Wires the core to the real ADB client and scrcpy sessions: `Hub::open()` gives device and stream managers backed by real devices, plus one event channel. Every app builds on this. | No |
 | `xrmc-cli` | `xrmc` command-line tool to exercise the core without a UI: `devices`, `connect`, `info`, `encoders`, `stream`, `hub` | No |
 
-These come next, after the core is proven:
+The decoding, rendering and app layers built on the core:
 
 | Crate / app | Responsibility |
 |---|---|
 | `xrmc-decode` | Hardware decoders: Android `AMediaCodec` → `AHardwareBuffer`; FFmpeg hwaccels for Linux (VA-API, V4L2), Windows (D3D11VA/DXVA2) and macOS (VideoToolbox). Software fallback. |
 | `xrmc-render` | wgpu compositor (Vulkan / Metal / DX12): all tiles in one pass, the lens-correction shader ported to WGSL, zero-copy import of decoded frames. |
-| `xrmc-remote` | WebSocket remote API, wire-compatible with the Electron hub, so the existing tablet web dashboard and hardware tools keep working. |
+| `xrmc-remote` (planned) | WebSocket remote API, wire-compatible with the Electron hub, so the existing tablet web dashboard and hardware tools keep working. |
 | `apps/xrmc-desktop` | The shared egui UI library (bridge to the hub, decode workers, view model, touch-first UI, Video codecs view) behind a small `Platform` trait, plus the desktop binary `xr-multicast`. The UI technology choice is documented in [ui-choice.md](ui-choice.md). |
 | `apps/xrmc-android` | The standalone Android app: the shared UI on GameActivity + Vulkan, a thin Java shell (USB host, MediaCodecList, multicast lock, foreground service), MediaCodec decoding. See [its README](../apps/xrmc-android/README.md). |
 | `apps/hubd` (planned) | Headless hub. |
@@ -68,6 +68,8 @@ apps/xrmc-android/build.sh release --abi arm64-v8a --fast   # quicker Rust build
 
 ## Status (November 2026)
 
+- **Released as XR MultiCast 2.0.0** on `main`: desktop (Windows, macOS, Linux x86_64/aarch64) and Android. Verified with a real Meta Quest 3 on Linux (USB and Wi-Fi, H.265 VA-API decoding, lens correction including the canted-panel tilt). Raspberry Pi, native Windows/macOS runs and Android USB host with a real headset are not yet verified.
+
 - **Tests:** 285 tests pass across the workspace. Clippy (`-D warnings`) is clean, and `cargo check` passes for Android, Windows and macOS.
 - **End to end against a real Android 15 emulator, pure Rust with no Google `adb` involved:**
   - Identify (getprop parsing, panel size, battery, IP) over direct TCP.
@@ -90,7 +92,7 @@ apps/xrmc-android/build.sh release --abi arm64-v8a --fast   # quicker Rust build
 
 ```bash
 export PATH=$HOME/.cargo/bin:$PATH
-export XRMC_SCRCPY_SERVER=/path/to/scrcpy-server        # v5.0.1 (npm run setup on main downloads it)
+export XRMC_SCRCPY_SERVER=/path/to/scrcpy-server        # v5.0.1 (`npm run setup` downloads it into vendor/)
 cargo run -p xrmc-cli -- devices
 cargo run -p xrmc-cli -- --no-server info 192.168.1.50:5555
 cargo run -p xrmc-cli -- stream <serial> --seconds 5 --out cap.h264
@@ -100,10 +102,10 @@ cargo run -p xrmc-cli -- hub --seconds 20 --cast <hardware-serial>
 ## Next steps
 
 1. **Android app:** test USB OTG and RSA approval with real headsets, and real-device MediaCodec decoders. Then add zero-copy decoding (`AImageReader` → `AHardwareBuffer` → Vulkan import, see the UI spike notes) and test with 10+ headsets.
-2. **`xrmc-render`:** port the lens-correction shader and compositor to WGSL/wgpu.
+2. **`xrmc-render`:** done (WGSL lens shader, one pass for all tiles). Next: zero-copy import of hardware-decoded frames.
 3. **`xrmc-decode` per platform:** hardware decoding through FFmpeg hwaccels is in.
    - VA-API is verified on Linux: output bit-exact with software, 12 concurrent 720p streams.
    - V4L2 (Raspberry Pi), VideoToolbox and D3D11VA/DXVA2 haven't been tested on real hardware.
    - Android MediaCodec is in (see the Android app). Next: zero-copy import into the compositor.
 4. **`xrmc-remote`:** remote API server compatible with the existing tablet dashboard and hardware tools.
-5. **Desktop app on egui:** reaches parity with the Electron app, then replaces it.
+5. **Desktop app on egui:** shipped in 2.0.0 and replaces the Electron app; the remaining gap is the remote dashboard/API (step 4).
