@@ -44,7 +44,7 @@ The decoding, rendering and app layers built on the core:
 
 ## Building and testing locally
 
-Everything builds and tests on this machine. GitHub CI is manual-only, to save build minutes.
+Everything builds and tests on this machine. GitHub CI runs on pull requests and on demand; tagged pushes (`v*`) build the release for every platform (see [releasing.md](releasing.md)).
 
 ```bash
 export PATH=$HOME/.cargo/bin:$PATH
@@ -61,7 +61,7 @@ The Android SDK/NDK/JDK come from the local Unity install (read-only) plus `~/An
 Android app (APK in `dist-native/android/`):
 
 ```bash
-apps/xrmc-android/build.sh                          # release, arm64-v8a + x86_64, signed with the debug key
+apps/xrmc-android/build.sh                          # release, arm64-v8a + x86_64; signed with the release keystore if configured, else a debug key
 apps/xrmc-android/build.sh release --abi x86_64     # emulator only
 apps/xrmc-android/build.sh release --abi arm64-v8a --fast   # quicker Rust build while iterating
 ```

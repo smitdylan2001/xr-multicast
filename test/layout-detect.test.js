@@ -100,5 +100,6 @@ test('PFD MR is detected as a Play For Dream MR with its own preset', () => {
   assert.strictEqual(c.rotation, 'auto');
   assert.strictEqual(c.layout, 'auto');
   assert.strictEqual(presetCorrection('meta', null).autoRotation, 0);
-  assert.strictEqual(detectVariant('meta', { model: 'Quest 3', device: 'eureka' }), null);
+  assert.strictEqual(detectVariant('meta', { model: 'Quest 3', device: 'eureka' }), 'quest3');
+  assert.strictEqual(detectVariant('meta', { model: 'Quest 2', device: 'hollywood' }), null);
 });
